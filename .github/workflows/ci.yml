@@ -1,0 +1,31 @@
+name: APK Surgeon CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: pip install -e '.[test]'
+      - name: Prepare Android round-trip fixture tools
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          mkdir -p "$RUNNER_TEMP/surgeon-tools"
+          cd "$RUNNER_TEMP/surgeon-tools"
+          curl -fsSL --retry 3 https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apktool_2.12.1.jar -o apktool.jar
+          printf '#!/bin/sh\nexec java -jar "%s/apktool.jar" "$@"\n' "$PWD" > apktool
+          chmod +x apktool
+          echo "$PWD" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
+          echo "TEST_ANDROID_JAR=$ANDROID_HOME/platforms/android-35/android.jar" >> "$GITHUB_ENV"
+      - run: pytest -q

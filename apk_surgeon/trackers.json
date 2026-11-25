@@ -1,0 +1,177 @@
+[
+  {
+    "name": "Firebase Analytics",
+    "prefix": "com.google.firebase.analytics",
+    "hooks": [
+      "Lcom/google/firebase/analytics/FirebaseAnalytics;->logEvent(Ljava/lang/String;Landroid/os/Bundle;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Firebase Crashlytics",
+    "prefix": "com.google.firebase.crashlytics",
+    "hooks": [
+      "Lcom/google/firebase/crashlytics/FirebaseCrashlytics;->log(Ljava/lang/String;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Google AdMob",
+    "prefix": "com.google.android.gms.ads",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Google Measurement",
+    "prefix": "com.google.android.gms.measurement",
+    "hooks": [],
+    "disable": [
+      "com.google.android.gms.measurement.AppMeasurementService",
+      "com.google.android.gms.measurement.AppMeasurementJobService",
+      "com.google.android.gms.measurement.AppMeasurementReceiver"
+    ]
+  },
+  {
+    "name": "Meta App Events",
+    "prefix": "com.facebook.appevents",
+    "hooks": [
+      "Lcom/facebook/appevents/AppEventsLogger;->logEvent(Ljava/lang/String;)V",
+      "Lcom/facebook/appevents/AppEventsLogger;->activateApp(Landroid/app/Application;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "AppsFlyer",
+    "prefix": "com.appsflyer",
+    "hooks": [
+      "Lcom/appsflyer/AppsFlyerLib;->logEvent(Landroid/content/Context;Ljava/lang/String;Ljava/util/Map;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Adjust",
+    "prefix": "com.adjust.sdk",
+    "hooks": [
+      "Lcom/adjust/sdk/Adjust;->trackEvent(Lcom/adjust/sdk/AdjustEvent;)V",
+      "Lcom/adjust/sdk/Adjust;->onCreate(Lcom/adjust/sdk/AdjustConfig;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Mixpanel",
+    "prefix": "com.mixpanel.android",
+    "hooks": [
+      "Lcom/mixpanel/android/mpmetrics/MixpanelAPI;->track(Ljava/lang/String;Lorg/json/JSONObject;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Amplitude Classic",
+    "prefix": "com.amplitude.api",
+    "hooks": [
+      "Lcom/amplitude/api/AmplitudeClient;->logEvent(Ljava/lang/String;)V",
+      "Lcom/amplitude/api/AmplitudeClient;->logEvent(Ljava/lang/String;Lorg/json/JSONObject;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Sentry",
+    "prefix": "io.sentry",
+    "hooks": [
+      "Lio/sentry/Sentry;->addBreadcrumb(Ljava/lang/String;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Bugsnag",
+    "prefix": "com.bugsnag.android",
+    "hooks": [
+      "Lcom/bugsnag/android/Bugsnag;->leaveBreadcrumb(Ljava/lang/String;)V"
+    ],
+    "disable": []
+  },
+  {
+    "name": "Flurry",
+    "prefix": "com.flurry.android",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "OneSignal",
+    "prefix": "com.onesignal",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Branch",
+    "prefix": "io.branch.referral",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Unity Ads",
+    "prefix": "com.unity3d.ads",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "AppLovin",
+    "prefix": "com.applovin.sdk",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "ironSource",
+    "prefix": "com.ironsource.mediationsdk",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Pangle",
+    "prefix": "com.bytedance.sdk.openadsdk",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "InMobi",
+    "prefix": "com.inmobi.ads",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Chartboost",
+    "prefix": "com.chartboost.sdk",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Vungle",
+    "prefix": "com.vungle.warren",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "MoPub",
+    "prefix": "com.mopub.mobileads",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Kochava",
+    "prefix": "com.kochava.tracker",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "Airship",
+    "prefix": "com.urbanairship",
+    "hooks": [],
+    "disable": []
+  },
+  {
+    "name": "PostHog",
+    "prefix": "com.posthog.android",
+    "hooks": [],
+    "disable": []
+  }
+]
