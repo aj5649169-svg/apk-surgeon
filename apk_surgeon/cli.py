@@ -80,6 +80,14 @@ def execute(args):
         if out.suffix.lower() != (".apks" if bundle else ".apk") or any(p.exists() for p in (out, report, backup)):
             raise ValueError("Use a fresh output directory with an unused .apk name")
         changes = plan(root, hits, args.strip_ad_permissions, args.disable_providers)
+        # Apktool 3.0.2 emits an empty --rename-resources-package for APKs
+        # with an empty resource table. Let aapt2 use the manifest package.
+        metadata = root/"apktool.yml"
+        if metadata.exists():
+            original = metadata.read_text(encoding="utf-8")
+            fixed = re.sub(r"""(?m)^[ \t]+packageName:[ \t]*(?:''|"")?[ \t]*\n""", "", original)
+            if changes and fixed != original:
+                changes[metadata] = fixed
         findings = list(analyze(root, args.llm_url, args.model)) if args.ai or args.ai_patch else []
         for path, result in findings:
             console.print(json.dumps(result, ensure_ascii=True))
