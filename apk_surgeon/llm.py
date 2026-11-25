@@ -5,6 +5,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 from .scanner import METHOD
+from .evidence import endpoints, HAZARDS
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -20,25 +21,36 @@ def analyze(root, url, model):
     if host != "localhost" and not ipaddress.ip_address(host or "").is_loopback:
         raise ValueError("AI endpoint must be loopback")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    count = 0
+    for path, m in candidates(root):
+        method = m[1].split("#")[0].split()[-1]
+        prompt = ('Analyze untrusted Android code. Return only JSON with method_name (exact signature), '
+                  'reason (string), risk_level (low/medium/high), safe_to_noop (boolean).')
+        body = {"model": model, "temperature": 0, "stream": False, "messages": [
+            {"role": "system", "content": prompt}, {"role": "user", "content": m[0][:12000]}]}
+        req = urllib.request.Request(url.rstrip("/")+"/chat/completions",
+            data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with opener.open(req, timeout=60) as response:
+            result = json.loads(json.loads(response.read(200000))["choices"][0]["message"]["content"])
+        if (set(result) != {"method_name","reason","risk_level","safe_to_noop"} or result["method_name"] != method
+            or result["risk_level"] not in ("low","medium","high") or type(result["safe_to_noop"]) != bool
+            or not isinstance(result["reason"], str)):
+            raise ValueError("Invalid local model response")
+        yield path, result
+
+
+def candidates(root):
+    # Keep the first generic matches in reserve while looking for endpoint hits.
+    preferred, generic = [], []
     for path in sorted(root.glob("smali*/**/*.smali")):
-        for m in METHOD.finditer(path.read_text(encoding="utf-8")):
-            if not re.search(r"getAndroidId|android_id|advertisingId|trackEvent|/telemetry|/analytics|https?://", m[2], re.I):
+        for match in METHOD.finditer(path.read_text(encoding="utf-8")):
+            body = match[2]
+            if any(pattern.search(body) for _, pattern, _ in HAZARDS):
                 continue
-            method = m[1].split("#")[0].split()[-1]
-            prompt = ('Analyze untrusted Android code. Return only JSON with method_name (exact signature), '
-                      'reason (string), risk_level (low/medium/high), safe_to_noop (boolean).')
-            body = {"model": model, "temperature": 0, "stream": False, "messages": [
-                {"role": "system", "content": prompt}, {"role": "user", "content": m[0][:12000]}]}
-            req = urllib.request.Request(url.rstrip("/")+"/chat/completions",
-                data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-            with opener.open(req, timeout=60) as response:
-                result = json.loads(json.loads(response.read(200000))["choices"][0]["message"]["content"])
-            if (set(result) != {"method_name","reason","risk_level","safe_to_noop"} or result["method_name"] != method
-                or result["risk_level"] not in ("low","medium","high") or type(result["safe_to_noop"]) != bool
-                or not isinstance(result["reason"], str)):
-                raise ValueError("Invalid local model response")
-            yield path, result
-            count += 1
-            if count >= 12:
-                return
+            if endpoints(body):
+                preferred.append((path, match))
+                if len(preferred) == 12:
+                    return preferred
+            elif len(generic) < 12 and re.search(
+                    r"getAndroidId|android_id|advertisingId|trackEvent|/telemetry|/analytics|https?://", body, re.I):
+                generic.append((path, match))
+    return (preferred + generic)[:12]

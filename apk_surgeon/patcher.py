@@ -49,25 +49,26 @@ AD_PERMISSIONS = {
 }
 
 
-def plan(root, hits, strip_ad_permissions=False, disable_providers=False):
+def plan(root, hits, strip_ad_permissions=False, disable_providers=False, *, manifest=True):
     changes = {}
-    path = root / "AndroidManifest.xml"
-    tree = parse_manifest(path)
-    allowed = {c for r in RULES for c in r["disable"]}
-    changed = False
-    for node, name in components(tree):
-        selected = name in allowed and node.tag in ("receiver", "service")
-        selected |= disable_providers and node.tag == "provider" and name in PROVIDERS
-        if selected and node.get(ANDROID+"enabled") != "false":
-            node.set(ANDROID+"enabled", "false")
-            changed = True
-    if strip_ad_permissions:
-        for perm in tree.xpath("/manifest/uses-permission | /manifest/uses-permission-sdk-23"):
-            if perm.get(ANDROID+"name") in AD_PERMISSIONS:
-                perm.getparent().remove(perm)
+    if manifest:
+        path = root / "AndroidManifest.xml"
+        tree = parse_manifest(path)
+        allowed = {c for r in RULES for c in r["disable"]}
+        changed = False
+        for node, name in components(tree):
+            selected = name in allowed and node.tag in ("receiver", "service")
+            selected |= disable_providers and node.tag == "provider" and name in PROVIDERS
+            if selected and node.get(ANDROID+"enabled") != "false":
+                node.set(ANDROID+"enabled", "false")
                 changed = True
-    if changed:
-        changes[path] = etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"
+        if strip_ad_permissions:
+            for perm in tree.xpath("/manifest/uses-permission | /manifest/uses-permission-sdk-23"):
+                if perm.get(ANDROID+"name") in AD_PERMISSIONS:
+                    perm.getparent().remove(perm)
+                    changed = True
+        if changed:
+            changes[path] = etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"
     files = defaultdict(set)
     for hit in hits.values():
         for path, signature in hit.hooks:

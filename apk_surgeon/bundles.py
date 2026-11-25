@@ -4,6 +4,9 @@ import subprocess
 import zipfile
 
 
+ABIS = ("arm64-v8a", "armeabi-v7a", "armeabi", "x86_64", "x86", "riscv64", "mips64", "mips")
+
+
 def unpack(source, work):
     """Return base first. Extract to generated names, never archive-controlled paths."""
     if source.suffix.lower() == ".apk":
@@ -13,6 +16,7 @@ def unpack(source, work):
     parts = {}
     identity = None
     with zipfile.ZipFile(source) as archive:
+        names = set(archive.namelist())
         for entry in archive.infolist():
             if entry.filename.lower().endswith(".obb"):
                 raise ValueError("Bundles with OBB expansion files are unsupported")
@@ -31,7 +35,22 @@ def unpack(source, work):
             if identity and identity != current or split in parts or not re.fullmatch(r"[\w.]*",split):
                 raise ValueError("Expected one package/version and a single installable split set")
             identity = current
-            parts[split] = path
+            named = work / (f"split_{split}.apk" if split else "base.apk")
+            path.rename(named)
+            sidecar = entry.filename + ".idsig"
+            if sidecar in names:
+                with archive.open(sidecar) as src, named.with_suffix(".apk.idsig").open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            parts[split] = named
     if "" not in parts:
         raise ValueError("Missing base APK")
     return [parts.pop(""),*parts.values()]
+
+def select_abi(parts, requested):
+    def architecture(part):
+        token = part.stem.removeprefix("split_").split(".")[-1].replace("-", "_")
+        return next((abi for abi in ABIS if abi.replace("-", "_") == token), None)
+    found = sorted({architecture(part) for part in parts[1:]} - {None})
+    if requested and found and requested not in found:
+        raise ValueError(f"ABI {requested} unavailable. Available: {', '.join(found)}")
+    return [parts[0], *(p for p in parts[1:] if requested is None or architecture(p) in (None, requested))], found

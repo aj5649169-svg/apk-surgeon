@@ -37,10 +37,10 @@ class Hit:
     hooks: list = field(default_factory=list)
 
 
-def scan(root):
+def scan(root, *, manifest=True):
     hits = {r["name"]: Hit() for r in RULES}
-    tree = parse_manifest(root / "AndroidManifest.xml")
-    for node, name in components(tree):
+    tree = parse_manifest(root / "AndroidManifest.xml") if manifest else None
+    for node, name in (components(tree) if manifest else ()):
         for rule in RULES:
             if name.startswith(rule["prefix"] + ".") or name in rule.get("providers", []):
                 hits[rule["name"]].components.append(f"{node.tag}: {name}")

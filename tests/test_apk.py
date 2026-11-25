@@ -1,4 +1,5 @@
 """CI exercises a real APK round trip using the Android build tools."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -9,7 +10,7 @@ from apk_surgeon.scanner import ANDROID, parse_manifest
 
 
 @pytest.mark.skipif("TEST_ANDROID_JAR" not in os.environ, reason="Android SDK integration fixture")
-@pytest.mark.parametrize("bundle", [False, True])
+@pytest.mark.parametrize("bundle", [False, "all", "filtered"])
 def test_signed_apk(tmp_path, bundle, monkeypatch):
     monkeypatch.setenv("HOME",str(tmp_path))
     manifest = tmp_path / "AndroidManifest.xml"
@@ -30,9 +31,21 @@ def test_signed_apk(tmp_path, bundle, monkeypatch):
         with zipfile.ZipFile(package,"w") as archive:
             archive.write(src,"org.example.fixture.apk")
             archive.write(split,"config.en.apk")
+            archive.writestr("info.json", "{}")
+            for abi in ("arm64_v8a", "armeabi_v7a"):
+                data = manifest.read_text().replace("config.en", "config."+abi)
+                other_manifest = tmp_path/"variant"/"AndroidManifest.xml"
+                other_manifest.parent.mkdir(exist_ok=True)
+                other_manifest.write_text(data)
+                other = tmp_path/(abi+".apk")
+                run("aapt2","link","-I",os.environ["TEST_ANDROID_JAR"],"--manifest",other_manifest,"-o",other)
+                archive.write(other,other.name)
         src, out = package, tmp_path/"clean.apks"
     run("apk-surgeon", "scan", src)
-    run("apk-surgeon", "clean", src, "--yes", "-o", out)
+    extra = ["--abi", "arm64-v8a"] if bundle == "filtered" else []
+    run("apk-surgeon", "clean", src, "--yes", "-o", out, *extra)
+    verified = json.loads(subprocess.check_output(["apk-surgeon", "verify", str(out), "--json"]))
+    assert verified["ok"]
     if bundle:
         with zipfile.ZipFile(out) as archive:
             archive.extractall(tmp_path/"install")
@@ -40,7 +53,7 @@ def test_signed_apk(tmp_path, bundle, monkeypatch):
         for part in sorted((tmp_path/"install").glob("*.apk")):
             details = subprocess.check_output(["apksigner","verify","--print-certs",str(part)],text=True)
             certs.append(next(line for line in details.splitlines() if "certificate SHA-256 digest" in line))
-        assert len(certs) == 2 and len(set(certs)) == 1
+        assert len(certs) == (3 if bundle == "filtered" else 4) and len(set(certs)) == 1
         out = tmp_path/"install/base.apk"
     run("apksigner", "verify", out)
     decoded = tmp_path/"check"

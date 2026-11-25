@@ -23,11 +23,11 @@ Firebase Analytics   com.google.firebase.analytics      logEvent(Ljava/lang/Stri
 Privacy Score: 96/100 (static SDK presence heuristic)
 ```
 
-The score subtracts four points per detected SDK family. Bundled code can be dormant. A score of 100 only means none of the 25 package rules matched.
+The score subtracts four points per detected SDK family. Bundled code can be dormant. A score of 100 only means no built-in SDK evidence was found.
 
 ## Patch scope
 
-Scan inspects decoded manifest components and known package directories across DEX files. The cleaner disables explicitly allowlisted receiver/service names and inserts an early return into exact concrete smali signatures. Providers, constructors, native methods, register-based methods and boolean methods without a spare local are left alone. Some SDKs are detection-only, especially ad, attribution and notification products whose initialization can affect app startup. Obfuscation, native telemetry, dynamic code and first-party analytics are outside this MVP.
+Scan inspects decoded manifest components and known package directories across DEX files. The cleaner disables explicitly allowlisted receiver/service names and inserts an early return into exact concrete smali signatures. Providers, constructors, native methods, register-based methods and boolean methods without a spare local are left alone. Some SDKs are detection-only, especially ad, attribution and notification products whose initialization can affect app startup. Encrypted strings, native telemetry, dynamic code and first-party analytics are outside this MVP.
 
 Signing reuses a local JKS at `~/.apk-surgeon/keystore.jks`. Back up this key and the adjacent password file securely. Both use owner-only permissions on POSIX. On Windows protect the directory with your user ACL. To reuse your own signing identity, set `APK_SURGEON_KEYSTORE`, `APK_SURGEON_ALIAS`, and `APK_SURGEON_PASSWORD` (same store and key password). A different signing certificate prevents updating over the publisher’s app and can break integrations and signature checks. Test on a spare device or emulator before relying on a cleaned app. Signature verification alone cannot establish launch behavior or tracking suppression.
 
@@ -64,3 +64,38 @@ ZIP-based APKS, APKM and XAPK inputs must contain one already-selected install s
 The local Exodus database adds detection-only code and network regex matches; use a trusted database. The built-in score still counts curated SDK families. --strip-ad-permissions removes the three supported ad identifier/attribution permissions. --disable-providers explicitly opts into disabling known Firebase, Facebook and Sentry startup providers. This can affect non-analytics features. Shared WorkManager and AndroidX Startup infrastructure stays enabled. An empty patch list produces no output.
 
 Use Apktool 3.0.2 or newer and Android Build Tools 35+. Legacy zipalign fallback is accepted only if the resulting resource table and stored native libraries actually satisfy alignment checks. ZIP alignment cannot fix an incompatible ELF binary.
+
+## Release APK workflows (v0.3.0)
+
+```sh
+apk-surgeon scan release.apk --json > scan.json
+apk-surgeon clean release.apk --smali-only -o reviewed/release.apk
+apk-surgeon clean app.apkm --abi arm64-v8a -o reviewed-splits/app.apks
+apk-surgeon verify reviewed-splits/app.apks --json
+```
+
+**Resources.** If aapt2 cannot rebuild an obfuscated resource tree, retry with
+`--smali-only`. Apktool skips resource decoding. Only assembled DEX files are
+taken from the rebuild. The compiled manifest, resource table and resource payloads
+retain their original bytes. Manifest scanning and all manifest edits are skipped.
+
+**Patch Safety Verdict.** SAFE means the scanner found no known re-signing
+hazards in the base APK's decoded code. CAUTION flags certificate-bound login.
+HIGH RISK flags integrity APIs or certificate inspection. A reference can be
+dormant. The verdict appears before approval and in the report. Runtime testing
+is still needed. Endpoint and manifest-key evidence can identify SDK families
+after obfuscation. Shared endpoints can also serve ordinary app features.
+These matches alone never authorize a method edit.
+
+**Split installs.** ABI filtering uses Android configuration split IDs and keeps
+the base, features, language and density splits. Omit `--abi` to retain every ABI.
+Select the device ABI for an adb install. Non-APK catalog metadata and icons are
+ignored when converting to flat APKS. Open the output with SAI, or extract it in
+an empty directory and run `adb install-multiple ./*.apk`.
+
+**Verification.** Each APK must pass apksigner verification, stored-file alignment
+(4 bytes, or 16 KiB for stored native libraries), and resource-table storage checks.
+Every split must have the base signer set. JSON includes signer SHA-256 digests,
+scheme status reported by the installed tools, per-APK errors and overall success.
+An unreported scheme is null. Detached v4 signatures require the corresponding
+.idsig file and are usually absent from distributed bundles. Failure exits nonzero.

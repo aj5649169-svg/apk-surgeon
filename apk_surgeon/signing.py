@@ -51,10 +51,11 @@ def identity(args):
 def check_layout(apk):
     with zipfile.ZipFile(apk) as z, open(apk,"rb") as stream:
         for item in z.infolist():
-            alignment = 4 if item.filename == "resources.arsc" else 16384
-            if alignment == 16384 and not (item.filename.startswith("lib/") and item.filename.endswith(".so")
-                                            and item.compress_type == zipfile.ZIP_STORED):
+            if item.filename == "resources.arsc" and item.compress_type != zipfile.ZIP_STORED:
+                raise ValueError("resources.arsc must be uncompressed")
+            if item.is_dir() or item.compress_type != zipfile.ZIP_STORED:
                 continue
+            alignment = 16384 if item.filename.startswith("lib/") and item.filename.endswith(".so") else 4
             stream.seek(item.header_offset + 26)
             name, extra = struct.unpack("<HH", stream.read(4))
             if item.compress_type != zipfile.ZIP_STORED or (item.header_offset+30+name+extra) % alignment:
