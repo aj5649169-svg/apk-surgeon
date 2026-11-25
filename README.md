@@ -27,9 +27,9 @@ The score subtracts four points per detected SDK family. Bundled code can be dor
 
 ## Patch scope
 
-Scan inspects decoded manifest components and known package directories across DEX files. The cleaner disables explicitly allowlisted receiver/service names and inserts an early return into exact concrete smali signatures. Providers, constructors, native methods, register-based methods and boolean methods without a spare local are left alone. Some SDKs are detection-only, especially ad, attribution and notification products whose initialization can affect app startup. Obfuscation, native telemetry, split APKs, dynamic code and first-party analytics are outside this MVP.
+Scan inspects decoded manifest components and known package directories across DEX files. The cleaner disables explicitly allowlisted receiver/service names and inserts an early return into exact concrete smali signatures. Providers, constructors, native methods, register-based methods and boolean methods without a spare local are left alone. Some SDKs are detection-only, especially ad, attribution and notification products whose initialization can affect app startup. Obfuscation, native telemetry, dynamic code and first-party analytics are outside this MVP.
 
-Signing uses a temporary local key by default. To reuse your own signing identity, set `APK_SURGEON_KEYSTORE`, `APK_SURGEON_ALIAS`, and `APK_SURGEON_PASSWORD` (same store and key password). A different signing certificate prevents updating over the publisher’s app and can break integrations and signature checks. Test on a spare device or emulator before relying on a cleaned app. Signature verification alone cannot establish launch behavior or tracking suppression.
+Signing reuses a local JKS at `~/.apk-surgeon/keystore.jks`. Back up this key and the adjacent password file securely. Both use owner-only permissions on POSIX. On Windows protect the directory with your user ACL. To reuse your own signing identity, set `APK_SURGEON_KEYSTORE`, `APK_SURGEON_ALIAS`, and `APK_SURGEON_PASSWORD` (same store and key password). A different signing certificate prevents updating over the publisher’s app and can break integrations and signature checks. Test on a spare device or emulator before relying on a cleaned app. Signature verification alone cannot establish launch behavior or tracking suppression.
 
 ## Optional local review
 
@@ -37,7 +37,7 @@ Signing uses a temporary local key by default. To reuse your own signing identit
 apk-surgeon clean app.apk -o review/app-clean.apk --ai --llm-url http://localhost:11434/v1 --model qwen3:4b
 ```
 
-Only candidate method snippets are sent to the local endpoint (up to 12 methods, 12,000 characters each). The analyzer accepts structured JSON findings. Its suggestions are advisory and never become patches. Keep the server and its logs private.
+Only candidate method snippets are sent to the local endpoint (up to 12 methods, 12,000 characters each). The analyzer accepts structured JSON findings. With --ai they remain advisory. --ai-patch offers each eligible exact method diff separately. Even with --yes, each proposal requires y/n/q. The tool generates the instructions itself and rebuilds in scratch before publishing output. Review semantics carefully; a valid no-op can still break application behavior. Keep the server and its logs private.
 
 ## Development
 
@@ -47,3 +47,20 @@ pytest -q
 ```
 
 CI also builds a synthetic APK, runs scan and clean, verifies the resulting signature and decodes its manifest again. Run the same integration test locally with the tools on PATH and `TEST_ANDROID_JAR` pointing to an SDK platform android.jar.
+
+## v0.2 workflows
+
+```sh
+apk-surgeon scan app.apk --tracker-db exodus-trackers.json
+apk-surgeon clean app.xapk -o review/app-cleaned.apks --strip-ad-permissions
+apk-surgeon clean app.apk -o review/clean.apk --ai-patch
+apk-surgeon clean app.apk --keystore my.jks --ks-alias release
+```
+
+Use APK_SURGEON_KS_PASS for custom keys; --ks-pass is also accepted but can enter shell history. Updates require the same certificate, package name and compatible version codes. v0.1 temporary signing identities cannot be recovered.
+
+ZIP-based APKS, APKM and XAPK inputs must contain one already-selected install set. aapt2 identifies the base by manifest metadata. Only base code is scanned and patched. All splits are aligned and signed with the same key, then packaged as a flat SAI-style archive. For adb, extract the archive and run adb install-multiple -r with all APK paths. Universal bundletool variant collections, encrypted archives and OBB payloads are unsupported.
+
+The local Exodus database adds detection-only code and network regex matches; use a trusted database. The built-in score still counts curated SDK families. --strip-ad-permissions removes the three supported ad identifier/attribution permissions. --disable-providers explicitly opts into disabling known Firebase, Facebook and Sentry startup providers. This can affect non-analytics features. Shared WorkManager and AndroidX Startup infrastructure stays enabled. An empty patch list produces no output.
+
+Use Apktool 3.0.2 or newer and Android Build Tools 35+. Legacy zipalign fallback is accepted only if the resulting resource table and stored native libraries actually satisfy alignment checks. ZIP alignment cannot fix an incompatible ELF binary.

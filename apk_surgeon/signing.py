@@ -1,0 +1,91 @@
+"""Local signing identity and APK layout checks."""
+import copy
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import struct
+import subprocess
+import tempfile
+import zipfile
+
+
+def identity(args):
+    supplied = args.keystore or os.getenv("APK_SURGEON_KEYSTORE")
+    password = args.ks_pass or os.getenv("APK_SURGEON_KS_PASS") or os.getenv("APK_SURGEON_PASSWORD")
+    alias = args.ks_alias or os.getenv("APK_SURGEON_ALIAS", "surgeon")
+    if supplied:
+        key = Path(supplied).expanduser().resolve(strict=True)
+        if not password:
+            raise ValueError("Set APK_SURGEON_KS_PASS for the supplied keystore")
+    else:
+        directory = Path.home()/".apk-surgeon"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        key = directory/"keystore.jks"
+        credential = directory/"keystore.pass"
+        if not key.exists():
+            lock = directory/"creating-key.lock"
+            with lock.open("x"):
+                try:
+                    if not key.exists():
+                        password = password or secrets.token_urlsafe(32)
+                        with tempfile.TemporaryDirectory(dir=directory) as tmp:
+                            new = Path(tmp)/"key"
+                            subprocess.run(["keytool","-genkeypair","-storetype","JKS","-keystore",str(new),
+                                "-storepass:env","KS_SECRET","-keypass:env","KS_SECRET","-alias",alias,
+                                "-keyalg","RSA","-keysize","3072","-validity","3650","-dname","CN=APK Surgeon Local"],
+                                env={**os.environ,"KS_SECRET":password},check=True)
+                            new.chmod(0o600)
+                            secret = Path(tmp)/"password"
+                            secret.touch(mode=0o600)
+                            secret.write_text(password)
+                            secret.replace(credential)
+                            new.replace(key)
+                finally:
+                    lock.unlink()
+        password = password or credential.read_text()
+    return key, alias, {**os.environ,"KS_SECRET":password}
+
+
+def check_layout(apk):
+    with zipfile.ZipFile(apk) as z, open(apk,"rb") as stream:
+        for item in z.infolist():
+            alignment = 4 if item.filename == "resources.arsc" else 16384
+            if alignment == 16384 and not (item.filename.startswith("lib/") and item.filename.endswith(".so")
+                                            and item.compress_type == zipfile.ZIP_STORED):
+                continue
+            stream.seek(item.header_offset + 26)
+            name, extra = struct.unpack("<HH", stream.read(4))
+            if item.compress_type != zipfile.ZIP_STORED or (item.header_offset+30+name+extra) % alignment:
+                raise ValueError(f"{item.filename} requires {alignment}-byte alignment; install current Build Tools")
+
+
+def align(source, dest):
+    cmd = ["zipalign","-P","16","-f","4",str(source),str(dest)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode:
+        message = result.stderr + result.stdout
+        if not re.search(r"(unknown|invalid|unrecognized|illegal) option", message, re.I):
+            raise ValueError("zipalign failed: "+message)
+        subprocess.run(["zipalign","-p","-f","4",str(source),str(dest)],check=True)
+    check_layout(dest)
+
+
+def sign(source, work, dest, credentials):
+    prepared, aligned = work/"prepared.zip", work/"aligned.apk"
+    with zipfile.ZipFile(source) as z, zipfile.ZipFile(prepared,"w") as output:
+        for item in z.infolist():
+            if re.fullmatch(r"META-INF/(MANIFEST\.MF|[^/]+\.(SF|RSA|EC|DSA))",item.filename,re.I):
+                continue
+            entry = copy.copy(item)
+            if entry.filename == "resources.arsc":
+                entry.compress_type = zipfile.ZIP_STORED
+            with z.open(item) as src, output.open(entry,"w") as dst:
+                shutil.copyfileobj(src,dst)
+    align(prepared,aligned)
+    key, alias, env = credentials
+    subprocess.run(["apksigner","sign","--ks",str(key),"--ks-key-alias",alias,"--ks-pass","env:KS_SECRET",
+                    "--key-pass","env:KS_SECRET","--out",str(dest),str(aligned)],check=True,env=env)
+    subprocess.run(["apksigner","verify","--verbose",str(dest)],check=True)
+    check_layout(dest)

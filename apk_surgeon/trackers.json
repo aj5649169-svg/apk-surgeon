@@ -5,7 +5,8 @@
     "hooks": [
       "Lcom/google/firebase/analytics/FirebaseAnalytics;->logEvent(Ljava/lang/String;Landroid/os/Bundle;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Firebase Crashlytics",
@@ -13,13 +14,18 @@
     "hooks": [
       "Lcom/google/firebase/crashlytics/FirebaseCrashlytics;->log(Ljava/lang/String;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Google AdMob",
     "prefix": "com.google.android.gms.ads",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "manifest-only",
+    "providers": [
+      "com.google.android.gms.ads.MobileAdsInitProvider"
+    ]
   },
   {
     "name": "Google Measurement",
@@ -29,7 +35,8 @@
       "com.google.android.gms.measurement.AppMeasurementService",
       "com.google.android.gms.measurement.AppMeasurementJobService",
       "com.google.android.gms.measurement.AppMeasurementReceiver"
-    ]
+    ],
+    "coverage": "manifest-only"
   },
   {
     "name": "Meta App Events",
@@ -38,7 +45,11 @@
       "Lcom/facebook/appevents/AppEventsLogger;->logEvent(Ljava/lang/String;)V",
       "Lcom/facebook/appevents/AppEventsLogger;->activateApp(Landroid/app/Application;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method",
+    "providers": [
+      "com.facebook.internal.FacebookInitProvider"
+    ]
   },
   {
     "name": "AppsFlyer",
@@ -46,7 +57,8 @@
     "hooks": [
       "Lcom/appsflyer/AppsFlyerLib;->logEvent(Landroid/content/Context;Ljava/lang/String;Ljava/util/Map;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Adjust",
@@ -55,7 +67,8 @@
       "Lcom/adjust/sdk/Adjust;->trackEvent(Lcom/adjust/sdk/AdjustEvent;)V",
       "Lcom/adjust/sdk/Adjust;->onCreate(Lcom/adjust/sdk/AdjustConfig;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Mixpanel",
@@ -63,7 +76,8 @@
     "hooks": [
       "Lcom/mixpanel/android/mpmetrics/MixpanelAPI;->track(Ljava/lang/String;Lorg/json/JSONObject;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Amplitude Classic",
@@ -72,7 +86,8 @@
       "Lcom/amplitude/api/AmplitudeClient;->logEvent(Ljava/lang/String;)V",
       "Lcom/amplitude/api/AmplitudeClient;->logEvent(Ljava/lang/String;Lorg/json/JSONObject;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Sentry",
@@ -80,7 +95,11 @@
     "hooks": [
       "Lio/sentry/Sentry;->addBreadcrumb(Ljava/lang/String;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method",
+    "providers": [
+      "io.sentry.android.core.SentryInitProvider"
+    ]
   },
   {
     "name": "Bugsnag",
@@ -88,90 +107,113 @@
     "hooks": [
       "Lcom/bugsnag/android/Bugsnag;->leaveBreadcrumb(Ljava/lang/String;)V"
     ],
-    "disable": []
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Flurry",
     "prefix": "com.flurry.android",
-    "hooks": [],
-    "disable": []
+    "hooks": [
+      "Lcom/flurry/android/FlurryAgent;->onEvent(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "OneSignal",
     "prefix": "com.onesignal",
-    "hooks": [],
-    "disable": []
+    "hooks": [
+      "Lcom/onesignal/OneSignal;->sendOutcome(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Branch",
     "prefix": "io.branch.referral",
-    "hooks": [],
-    "disable": []
+    "hooks": [
+      "Lio/branch/referral/Branch;->userCompletedAction(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "Unity Ads",
     "prefix": "com.unity3d.ads",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "AppLovin",
     "prefix": "com.applovin.sdk",
-    "hooks": [],
-    "disable": []
+    "hooks": [
+      "Lcom/applovin/sdk/AppLovinEventService;->trackEvent(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
   },
   {
     "name": "ironSource",
     "prefix": "com.ironsource.mediationsdk",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "Pangle",
     "prefix": "com.bytedance.sdk.openadsdk",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "InMobi",
     "prefix": "com.inmobi.ads",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "Chartboost",
     "prefix": "com.chartboost.sdk",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "Vungle",
     "prefix": "com.vungle.warren",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "MoPub",
     "prefix": "com.mopub.mobileads",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "Kochava",
     "prefix": "com.kochava.tracker",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "Airship",
     "prefix": "com.urbanairship",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   },
   {
     "name": "PostHog",
     "prefix": "com.posthog.android",
     "hooks": [],
-    "disable": []
+    "disable": [],
+    "coverage": "detection-only"
   }
 ]

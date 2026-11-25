@@ -42,7 +42,7 @@ def scan(root):
     tree = parse_manifest(root / "AndroidManifest.xml")
     for node, name in components(tree):
         for rule in RULES:
-            if name.startswith(rule["prefix"] + "."):
+            if name.startswith(rule["prefix"] + ".") or name in rule.get("providers", []):
                 hits[rule["name"]].components.append(f"{node.tag}: {name}")
     for directory in root.glob("smali*"):
         if not re.fullmatch(r"smali(?:_classes\d+)?", directory.name):
@@ -61,3 +61,26 @@ def scan(root):
                     if sig in rule["hooks"]:
                         hit.hooks.append((path, sig))
     return {name: h for name, h in hits.items() if h.classes or h.components}
+
+
+def exodus(root, database):
+    """Match local, trusted Exodus code/network expressions against static evidence."""
+    rows = json.loads(database.read_text(encoding="utf-8"))["trackers"]
+    rules = [(r["name"], re.compile(r["code_signature"]) if r.get("code_signature") else None,
+              re.compile(r["network_signature"],re.I) if r.get("network_signature") else None)
+             for r in (rows.values() if isinstance(rows,dict) else rows)]
+    found = set()
+    for path in root.glob("smali*/**/*.smali"):
+        text = path.read_text(encoding="utf-8")
+        cls = CLASS.search(text)
+        if not cls:
+            continue
+        descriptor = cls[1][1:-1]
+        hosts = re.findall(r'(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,63}\b',text)
+        for name, code, network in rules:
+            if name in found:
+                continue
+            if ((code and (code.search(descriptor) or code.search(descriptor.replace("/","."))))
+                    or (network and any(network.search(h) for h in hosts))):
+                found.add(name)
+    return sorted(found)

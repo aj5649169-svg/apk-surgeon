@@ -2,7 +2,11 @@ import argparse
 import json
 import os
 from pathlib import Path
-import secrets
+import re
+from .bundles import unpack
+from .signing import identity, sign
+from .scanner import exodus
+from .patcher import patch_smali
 import shutil
 import subprocess
 import sys
@@ -18,7 +22,7 @@ from .patcher import apply, diff, plan
 from .scanner import RULES, scan
 
 console = Console(markup=False, highlight=False)
-TOOLS = ("java", "keytool", "apktool", "apksigner", "zipalign")
+TOOLS = ("java", "keytool", "apktool", "apksigner", "zipalign", "aapt2")
 INSTALL = """Linux (Debian/Ubuntu): sudo apt install default-jdk apktool apksigner zipalign
 macOS: brew install openjdk apktool; brew install --cask android-commandlinetools
 Windows: winget install EclipseAdoptium.Temurin.17.JDK
@@ -35,62 +39,65 @@ def run(*args, env=None):
 
 
 def show(hits):
-    table = Table("SDK", "Package prefix", "Manifest components", "Matched hooks")
+    table = Table("SDK", "Patch coverage", "Package prefix", "Manifest components", "Matched hooks")
     for rule in RULES:
         h = hits.get(rule["name"])
         if h:
-            table.add_row(rule["name"], rule["prefix"], "\n".join(h.components) or "—",
+            table.add_row(rule["name"], rule["coverage"], rule["prefix"], "\n".join(h.components) or "—",
                           "\n".join(sig.split("->")[1] for _,sig in h.hooks) or "—")
     console.print(table)
     console.print(f"Privacy Score: {max(0,100-4*len(hits))}/100 (static SDK presence heuristic)")
-
-
-def sign(unsigned, work, signed):
-    aligned = work / "aligned.apk"
-    run("zipalign", "-P", "16", "-f", "4", unsigned, aligned)
-    key = os.getenv("APK_SURGEON_KEYSTORE")
-    env = os.environ.copy()
-    alias = env.get("APK_SURGEON_ALIAS", "surgeon")
-    if not key:
-        key = work / "local.p12"
-        env["APK_SURGEON_PASSWORD"] = secrets.token_urlsafe(32)
-        run("keytool", "-genkeypair", "-storetype", "PKCS12", "-keystore", key, "-storepass:env",
-            "APK_SURGEON_PASSWORD", "-alias", alias, "-keyalg", "RSA", "-keysize", "3072",
-            "-validity", "3650", "-dname", "CN=APK Surgeon Local", env=env)
-    elif not env.get("APK_SURGEON_PASSWORD"):
-        raise ValueError("Set APK_SURGEON_PASSWORD for the supplied keystore")
-    run("apksigner", "sign", "--ks", key, "--ks-key-alias", alias, "--ks-pass",
-        "env:APK_SURGEON_PASSWORD", "--out", signed, aligned, env=env)
-    run("apksigner", "verify", "--verbose", signed)
 
 
 def execute(args):
     if args.command == "doctor":
         for tool in TOOLS:
             console.print(tool, shutil.which(tool) or "missing")
+        if shutil.which("apktool"):
+            version = subprocess.check_output(["apktool","--version"],text=True).strip()
+            match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
+            if not match or tuple(map(int,match.groups())) < (3,0,2):
+                console.print("Warning: upgrade Apktool to 3.0.2 or newer. CVE-2026-39973 affects 3.0.0 and 3.0.1.")
         console.print(INSTALL)
         return int(any(not shutil.which(t) for t in TOOLS))
     apk = args.apk.resolve(strict=True)
-    with zipfile.ZipFile(apk) as archive:
-        if "AndroidManifest.xml" not in archive.namelist():
-            raise ValueError("Expected a standalone APK with AndroidManifest.xml")
     with tempfile.TemporaryDirectory() as temp:
         work = Path(temp)
         root = work / "decoded"
-        run("apktool", "d", apk, "-o", root)
+        parts = unpack(apk,work)
+        bundle = apk.suffix.lower() != ".apk"
+        run("apktool", "d", parts[0], "-o", root)
         hits = scan(root)
         show(hits)
+        if args.tracker_db:
+            for name in exodus(root,args.tracker_db):
+                console.print("Exodus match (detection only):", name)
         if args.command == "scan":
             return 0
-        out = (args.output or apk.with_name(apk.stem+"-clean.apk")).resolve()
+        out = (args.output or apk.with_name(apk.stem+"-cleaned"+(".apks" if bundle else ".apk"))).resolve()
         report = out.parent / "privacy-report.md"
         backup = out.with_suffix(".backups")
-        if out.suffix.lower() != ".apk" or any(p.exists() for p in (out, report, backup)):
+        if out.suffix.lower() != (".apks" if bundle else ".apk") or any(p.exists() for p in (out, report, backup)):
             raise ValueError("Use a fresh output directory with an unused .apk name")
-        changes = plan(root, hits)
-        findings = list(analyze(root, args.llm_url, args.model)) if args.ai else []
-        for result in findings:
+        changes = plan(root, hits, args.strip_ad_permissions, args.disable_providers)
+        findings = list(analyze(root, args.llm_url, args.model)) if args.ai or args.ai_patch else []
+        for path, result in findings:
             console.print(json.dumps(result, ensure_ascii=True))
+            if args.ai_patch and result["safe_to_noop"]:
+                old = changes.get(path, path.read_text(encoding="utf-8"))
+                new = patch_smali(old, {result["method_name"]})
+                if old != new:
+                    import difflib
+                    console.print("".join(difflib.unified_diff(old.splitlines(True),new.splitlines(True),
+                        fromfile=str(path.relative_to(root)),tofile=str(path.relative_to(root)))),soft_wrap=True)
+                    while True:
+                        answer = input("AI proposal: [y] apply / [n] skip / [q] quit: ").strip().lower()
+                        if answer in {"y","n","q"}:
+                            break
+                    if answer == "q":
+                        return 0
+                    if answer == "y":
+                        changes[path] = new
         if not changes:
             console.print("No allowlisted changes. Skipping rebuild.")
             return 0
@@ -99,12 +106,24 @@ def execute(args):
         if not args.yes and input("Apply these changes and re-sign? [y/N] ").strip().lower() != "y":
             return 0
         out.parent.mkdir(parents=True, exist_ok=True)
-        backup.mkdir()
-        apply(root, changes, backup)
+        # Assemble in scratch first. Invalid instructions cannot reach user outputs.
+        scratch_backup = work/"originals"
+        apply(root, changes, scratch_backup)
         unsigned = work / "unsigned.apk"
         run("apktool", "b", root, "-o", unsigned)
         signed = work / "signed.apk"
-        sign(unsigned, work, signed)
+        credentials = identity(args)
+        sign(unsigned, work, signed, credentials)
+        if bundle:
+            packed = work/"cleaned.apks"
+            with zipfile.ZipFile(packed,"w") as archive:
+                archive.write(signed,"base.apk")
+                for index, split in enumerate(parts[1:],1):
+                    dest = work/f"signed-{index}.apk"
+                    sign(split,work,dest,credentials)
+                    archive.write(dest,f"split_{index}.apk")
+            signed = packed
+        shutil.copytree(scratch_backup,backup)
         with out.open("xb") as dst, signed.open("rb") as src:
             shutil.copyfileobj(src, dst)
         with report.open("x", encoding="utf-8") as stream:
@@ -124,6 +143,12 @@ def main():
     clean.add_argument("apk", type=Path)
     clean.add_argument("-o", "--output", type=Path)
     clean.add_argument("--yes", action="store_true")
+    for flag in ("strip-ad-permissions","disable-providers","ai-patch"):
+        clean.add_argument("--"+flag,action="store_true")
+    for flag in ("keystore","ks-alias","ks-pass"):
+        clean.add_argument("--"+flag)
+    for command in ("scan","clean"):
+        sub.choices[command].add_argument("--tracker-db",type=Path)
     clean.add_argument("--ai", action="store_true")
     clean.add_argument("--llm-url", default="http://localhost:11434/v1")
     clean.add_argument("--model", default="qwen3:4b")

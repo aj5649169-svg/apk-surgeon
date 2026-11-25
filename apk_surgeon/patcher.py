@@ -17,7 +17,11 @@ def patch_smali(text, signatures):
         if not sig.endswith((")V", ")Z")):
             return m[0]
         locals_line = re.search(r"(?m)^([ \t]*)\.locals[ \t]+(\d+)[ \t]*(?:#[^\n]*)?$", m[2])
-        if not locals_line:
+        if not re.fullmatch(r"[^\s()<>]+\((?:\[*(?:[ZBCSIFJD]|L[^;()\s]+;))*\)[VZ]", sig):
+            return m[0]
+        if not locals_line or len(re.findall(r"(?m)^\s*\.(?:registers|locals)\b",m[2])) != 1:
+            return m[0]
+        if int(locals_line[2]) > 65535 or ".method " in m[2]:
             return m[0]
         value = sig.endswith(")Z")
         if value and int(locals_line[2]) == 0:
@@ -33,16 +37,35 @@ def patch_smali(text, signatures):
     return METHOD.sub(replace, text)
 
 
-def plan(root, hits):
+PROVIDERS = {
+    "com.google.firebase.provider.FirebaseInitProvider",
+    "com.facebook.internal.FacebookInitProvider",
+    *(p for rule in RULES for p in rule.get("providers", [])),
+}
+AD_PERMISSIONS = {
+    "com.google.android.gms.permission.AD_ID",
+    "android.permission.ACCESS_ADSERVICES_AD_ID",
+    "android.permission.ACCESS_ADSERVICES_ATTRIBUTION",
+}
+
+
+def plan(root, hits, strip_ad_permissions=False, disable_providers=False):
     changes = {}
     path = root / "AndroidManifest.xml"
     tree = parse_manifest(path)
     allowed = {c for r in RULES for c in r["disable"]}
     changed = False
     for node, name in components(tree):
-        if name in allowed and node.tag in ("receiver", "service") and node.get(ANDROID+"enabled") != "false":
+        selected = name in allowed and node.tag in ("receiver", "service")
+        selected |= disable_providers and node.tag == "provider" and name in PROVIDERS
+        if selected and node.get(ANDROID+"enabled") != "false":
             node.set(ANDROID+"enabled", "false")
             changed = True
+    if strip_ad_permissions:
+        for perm in tree.xpath("/manifest/uses-permission | /manifest/uses-permission-sdk-23"):
+            if perm.get(ANDROID+"name") in AD_PERMISSIONS:
+                perm.getparent().remove(perm)
+                changed = True
     if changed:
         changes[path] = etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"
     files = defaultdict(set)

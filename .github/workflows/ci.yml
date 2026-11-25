@@ -22,7 +22,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
           mkdir -p "$RUNNER_TEMP/surgeon-tools"
           cd "$RUNNER_TEMP/surgeon-tools"
-          curl -fsSL --retry 3 https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apktool_2.12.1.jar -o apktool.jar
+          curl -fsSL --retry 3 https://github.com/iBotPeaches/Apktool/releases/download/v3.0.2/apktool_3.0.2.jar -o apktool.jar
           printf '#!/bin/sh\nexec java -jar "%s/apktool.jar" "$@"\n' "$PWD" > apktool
           chmod +x apktool
           echo "$PWD" >> "$GITHUB_PATH"

@@ -38,7 +38,7 @@ def analyze(root, url, model):
                 or result["risk_level"] not in ("low","medium","high") or type(result["safe_to_noop"]) != bool
                 or not isinstance(result["reason"], str)):
                 raise ValueError("Invalid local model response")
-            yield result
+            yield path, result
             count += 1
             if count >= 12:
                 return
