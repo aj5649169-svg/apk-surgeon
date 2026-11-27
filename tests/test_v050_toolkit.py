@@ -342,7 +342,7 @@ def test_windows_cmd_bat_executable_resolution_without_shell(tmp_path, monkeypat
     def fake_run(cmd, **kwargs):
         assert kwargs.get("shell") is not True
         recorded.append(list(cmd))
-        if Path(cmd[0]).name == "apksigner.BAT" and cmd[1] == "sign":
+        if cmd[0] == resolved_map["apksigner"] and cmd[1] == "sign":
             repack.repack(cmd[-1], cmd[cmd.index("--out") + 1])
         return SimpleNamespace(
             returncode=0,
