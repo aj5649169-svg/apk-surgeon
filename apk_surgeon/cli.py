@@ -407,6 +407,10 @@ def _execute_toolkit(args):
 def execute(args):
     if args.command == "doctor":
         return doctor(args)
+    if args.command == "ui":
+        from . import ui
+
+        return ui.serve(host=args.host, port=args.port, open_browser=not args.no_browser)
     if args.command in {"decode", "build", "merge", "sign", "inspect"}:
         return _execute_toolkit(args)
 
@@ -797,6 +801,11 @@ def main(argv=None):
     inspect_p = sub.add_parser("inspect")
     inspect_p.add_argument("apk", type=Path)
     inspect_p.add_argument("--json", action="store_true")
+
+    ui_p = sub.add_parser("ui")
+    ui_p.add_argument("--host", default="127.0.0.1")
+    ui_p.add_argument("--port", type=int, default=8765)
+    ui_p.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
     try:
         return execute(args)

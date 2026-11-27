@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="apk-surgeon-token" content="__APK_SURGEON_TOKEN__">
+  <title>APK Surgeon — Local APK &amp; Privacy Workbench</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M12 2L4 6v6c0 5.2 3.4 9.7 8 11 4.6-1.3 8-5.8 8-11V6l-8-4z"/>
+          <path d="M9 12.2l2 2 4-4.2"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-title">APK Surgeon <span id="app-version" class="version-pill">v0.5.0</span></div>
+        <div class="brand-sub">Surgical Privacy &amp; Raw APK Workbench</div>
+      </div>
+    </div>
+
+    <div class="cli-bar" title="Live equivalent CLI command">
+      <span class="cli-label">CLI</span>
+      <code id="cli-preview" class="cli-code">apk-surgeon inspect &lt;apk&gt; --json</code>
+      <button id="btn-copy-cli" type="button" class="btn btn-ghost btn-sm">Copy</button>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btn-doctor" type="button" class="btn btn-pill">
+        <span id="doctor-dot" class="dot dot-warn"></span>
+        <span id="doctor-summary">Toolchain</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="workspace-layout">
+    <nav class="nav-rail" aria-label="Workbenches">
+      <button type="button" class="nav-tab is-active" data-tab="inspect">
+        <span class="nav-icon">&#9673;</span>
+        <span>Inspect</span>
+      </button>
+      <button type="button" class="nav-tab" data-tab="clean">
+        <span class="nav-icon">&#9879;</span>
+        <span>Privacy Studio</span>
+      </button>
+      <button type="button" class="nav-tab" data-tab="decode">
+        <span class="nav-icon">&#8623;</span>
+        <span>Decode</span>
+      </button>
+      <button type="button" class="nav-tab" data-tab="build">
+        <span class="nav-icon">&#9881;</span>
+        <span>Build &amp; Sign</span>
+      </button>
+      <button type="button" class="nav-tab" data-tab="merge">
+        <span class="nav-icon">&#8892;</span>
+        <span>Merge Splits</span>
+      </button>
+      <button type="button" class="nav-tab" data-tab="sign">
+        <span class="nav-icon">&#10003;</span>
+        <span>Sign &amp; Verify</span>
+      </button>
+    </nav>
+
+    <main class="main-pane">
+      <section class="target-card">
+        <div id="dropzone" class="dropzone" tabindex="0">
+          <input id="file-picker" type="file" accept=".apk,.apks,.xapk,.apkm" hidden>
+          <div class="dropzone-main">
+            <strong id="active-target-name">Drop .apk, .xapk, .apkm, or .apks here</strong>
+            <span id="active-target-meta" class="muted">or click to upload (zero copy overhead for large files via local path below)</span>
+          </div>
+          <button id="btn-browse" type="button" class="btn btn-secondary btn-sm">Choose File</button>
+        </div>
+
+        <div class="target-inputs">
+          <label class="field grow">
+            <span>Local APK / Bundle Path (optional instead of upload)</span>
+            <input id="local-path-input" type="text" placeholder="/path/to/app.apk or C:\apks\app.xapk">
+          </label>
+          <label class="field">
+            <span>APKEditor JAR (optional override)</span>
+            <input id="apkeditor-jar-input" type="text" placeholder="Path to APKEditor-1.4.9.jar">
+          </label>
+          <div class="field-actions">
+            <button id="btn-quick-inspect" type="button" class="btn btn-primary">Inspect Target</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: INSPECT -->
+      <section id="tab-inspect" class="tab-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Executive APK Telemetry</h2>
+            <p class="muted">Read-only inspection of structure, DEX containers, 16 KiB readiness, frameworks &amp; Pairip.</p>
+          </div>
+          <div class="btn-row">
+            <button id="btn-inspect-to-clean" type="button" class="btn btn-secondary btn-sm">Open in Privacy Studio</button>
+            <button id="btn-inspect-to-decode" type="button" class="btn btn-secondary btn-sm">Decode</button>
+          </div>
+        </div>
+        <div id="inspect-empty" class="empty-state">
+          Drop an APK or split bundle above and click <strong>Inspect Target</strong> to inspect metadata, ABIs, DEX containers, and protections in milliseconds.
+        </div>
+        <div id="inspect-results" class="stack" hidden>
+          <div id="inspect-kpis" class="kpi-grid"></div>
+          <div id="inspect-caveat" class="alert alert-warn" hidden></div>
+          <div class="two-col">
+            <div class="card">
+              <h3>Storage &amp; 16 KiB Readiness</h3>
+              <div id="inspect-storage" class="kv-list"></div>
+            </div>
+            <div class="card">
+              <h3>Badging &amp; ABIs</h3>
+              <div id="inspect-badging" class="kv-list"></div>
+            </div>
+          </div>
+          <div class="card">
+            <h3>DEX Files &amp; Containers</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Entry</th><th>Format</th><th>Header Size</th><th>Container Sections</th></tr>
+                </thead>
+                <tbody id="inspect-dex-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="inspect-splits-card" class="card" hidden>
+            <h3>Split Bundle Members</h3>
+            <div id="inspect-splits" class="chip-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: PRIVACY STUDIO -->
+      <section id="tab-clean" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>One-Click Clean &amp; Privacy Studio</h2>
+            <p class="muted">Preview exact smali/manifest diffs and safety verdicts before rebuilding &amp; re-signing.</p>
+          </div>
+          <div class="btn-row">
+            <button id="btn-clean-preview" type="button" class="btn btn-secondary">Scan &amp; Diff Preview</button>
+            <button id="btn-clean-apply" type="button" class="btn btn-primary">Approve &amp; Clean APK</button>
+          </div>
+        </div>
+
+        <div class="toggle-grid">
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-sinkhole" checked>
+            <div>
+              <strong>Sinkhole Telemetry URLs</strong>
+              <span>Rewrites allowlisted analytics literals to https://127.0.0.1/ without breaking control flow.</span>
+            </div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-strip-ad">
+            <div>
+              <strong>Strip Ad Permissions</strong>
+              <span>Removes AD_ID and ACCESS_ADSERVICES_* manifest permissions.</span>
+            </div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-disable-providers">
+            <div>
+              <strong>Disable Init Providers</strong>
+              <span>Marks known tracker ContentProviders android:enabled="false".</span>
+            </div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-selective-dex">
+            <div>
+              <strong>Selective Multi-DEX</strong>
+              <span>Disassembles and splices only classesN.dex entries mentioning matched trackers.</span>
+            </div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-smali-only">
+            <div>
+              <strong>Smali Only (--smali-only)</strong>
+              <span>Skips manifest edits and keeps binary resources untouched.</span>
+            </div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-trust-ca">
+            <div>
+              <strong>Trust User CA (MITM Audit)</strong>
+              <span>Installs networkSecurityConfig trusting user certificates on your own device.</span>
+            </div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-allow-shots">
+            <div>
+              <strong>Allow Screenshots</strong>
+              <span>Neutralizes literal FLAG_SECURE (0x2000) Window calls for inspection.</span>
+            </div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="opt-merge-splits">
+            <div>
+              <strong>Merge Splits First</strong>
+              <span>Unifies .xapk/.apkm/.apks via APKEditor and normalizes extractNativeLibs.</span>
+            </div>
+          </label>
+          <label class="toggle-card toggle-warn">
+            <input type="checkbox" id="opt-custom-domains">
+            <div>
+              <strong>Allow Custom Domains</strong>
+              <span>Permits non-allowlisted hosts from your YAML recipe (core denylist stays blocked).</span>
+            </div>
+          </label>
+          <label class="toggle-card toggle-danger">
+            <input type="checkbox" id="opt-force-unsafe">
+            <div>
+              <strong>Force Unsafe (Pairip Override)</strong>
+              <span>Overrides the Pairip VM safety block at your own risk.</span>
+            </div>
+          </label>
+        </div>
+
+        <div class="three-col">
+          <label class="field">
+            <span>Engine</span>
+            <select id="clean-engine">
+              <option value="auto">auto (Apktool &rarr; APKEditor fallback)</option>
+              <option value="apktool">apktool</option>
+              <option value="apkeditor">apkeditor</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Split ABI Filter (bundles)</span>
+            <select id="clean-abi">
+              <option value="">All ABIs</option>
+              <option value="arm64-v8a">arm64-v8a</option>
+              <option value="armeabi-v7a">armeabi-v7a</option>
+              <option value="x86_64">x86_64</option>
+              <option value="x86">x86</option>
+              <option value="riscv64">riscv64</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Output Path (optional; defaults to job artifact shelf)</span>
+            <input id="clean-output" type="text" placeholder="Leave blank for workspace download">
+          </label>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h3>Recipe YAML Editor (Live Validation)</h3>
+              <p class="muted">Optional declarative hooks, packages, components, and custom sinkhole domains.</p>
+            </div>
+            <div class="btn-row">
+              <button id="btn-recipe-sample" type="button" class="btn btn-ghost btn-sm">Insert Template</button>
+              <button id="btn-recipe-clear" type="button" class="btn btn-ghost btn-sm">Clear</button>
+              <span id="recipe-status" class="badge badge-neutral">Empty</span>
+            </div>
+          </div>
+          <textarea id="recipe-yaml" rows="6" spellcheck="false" placeholder="version: 1&#10;package_prefixes: []&#10;methods: []&#10;disable_components: []&#10;sinkhole_domains: []"></textarea>
+          <div id="recipe-feedback" class="muted small"></div>
+        </div>
+
+        <div id="clean-preview-box" class="stack" hidden>
+          <div class="two-col">
+            <div class="card">
+              <h3>Scan Summary &amp; Verdict</h3>
+              <div id="preview-summary" class="kv-list"></div>
+            </div>
+            <div class="card">
+              <h3>Matched Trackers &amp; Sinkhole Candidates</h3>
+              <div id="preview-trackers" class="stack-sm"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h3>Unified Diff Preview</h3>
+              <button id="btn-copy-diff" type="button" class="btn btn-ghost btn-sm">Copy Diff</button>
+            </div>
+            <div id="preview-diff" class="diff-view"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: DECODE -->
+      <section id="tab-decode" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Raw Decode</h2>
+            <p class="muted">Disassemble resources &amp; smali with Apktool 3.0.3 or APKEditor V1.4.9 fallback.</p>
+          </div>
+          <button id="btn-run-decode" type="button" class="btn btn-primary">Decode APK</button>
+        </div>
+        <div class="two-col">
+          <label class="field">
+            <span>Engine</span>
+            <select id="decode-engine">
+              <option value="auto">auto (Apktool &rarr; APKEditor on resource failure)</option>
+              <option value="apktool">apktool</option>
+              <option value="apkeditor">apkeditor</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Output Directory (optional)</span>
+            <input id="decode-output" type="text" placeholder="Leave blank for managed workspace dir">
+          </label>
+        </div>
+        <div class="toggle-grid compact">
+          <label class="toggle-card">
+            <input type="checkbox" id="decode-no-res">
+            <div><strong>Skip Resources (-r / --no-res)</strong><span>Keep resources.arsc binary and skip res/ decoding.</span></div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="decode-no-src">
+            <div><strong>Skip Smali (-s / --no-src)</strong><span>Keep classes*.dex untouched and decode resources only.</span></div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="decode-force">
+            <div><strong>Overwrite Existing (--force)</strong><span>Allow replacing an existing output directory.</span></div>
+          </label>
+        </div>
+        <div id="decoded-browser" class="card" hidden>
+          <div class="card-head">
+            <div>
+              <h3>Decoded Tree File Viewer</h3>
+              <span id="decoded-root-label" class="muted small"></span>
+            </div>
+            <button id="btn-send-to-build" type="button" class="btn btn-secondary btn-sm">Use in Build &amp; Sign &rarr;</button>
+          </div>
+          <div class="browser-grid">
+            <div id="decoded-file-list" class="file-list"></div>
+            <pre id="decoded-file-content" class="code-viewer">Select a file on the left to inspect its contents safely.</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: BUILD & SIGN -->
+      <section id="tab-build" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Raw Build &amp; Sign</h2>
+            <p class="muted">Auto-detects Apktool vs APKEditor trees, enforces ZIP_STORED + 16 KiB zipalign, and signs.</p>
+          </div>
+          <button id="btn-run-build" type="button" class="btn btn-primary">Build APK</button>
+        </div>
+        <div class="two-col">
+          <label class="field">
+            <span>Decoded Directory Path</span>
+            <div class="inline-input">
+              <input id="build-dir" type="text" placeholder="/path/to/app-decoded">
+              <button id="btn-detect-engine" type="button" class="btn btn-secondary btn-sm">Detect</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>Output APK Path (optional)</span>
+            <input id="build-output" type="text" placeholder="Leave blank for workspace download">
+          </label>
+        </div>
+        <div class="two-col">
+          <label class="field">
+            <span>Engine <span id="detected-engine-badge" class="badge badge-neutral">auto</span></span>
+            <select id="build-engine">
+              <option value="auto">auto-detect (apktool.yml vs archive-info.json)</option>
+              <option value="apktool">apktool</option>
+              <option value="apkeditor">apkeditor</option>
+            </select>
+          </label>
+          <div class="toggle-grid compact">
+            <label class="toggle-card">
+              <input type="checkbox" id="build-unsigned">
+              <div><strong>Unsigned (--unsigned)</strong><span>Align for 16 KiB pages without running apksigner.</span></div>
+            </label>
+            <label class="toggle-card">
+              <input type="checkbox" id="build-force">
+              <div><strong>Overwrite (--force)</strong><span>Allow overwriting an existing output APK.</span></div>
+            </label>
+          </div>
+        </div>
+        <details class="card">
+          <summary>Custom Keystore Options (optional — defaults to ~/.apk-surgeon/keystore.jks)</summary>
+          <div class="three-col top-gap">
+            <label class="field"><span>Keystore Path</span><input id="build-ks" type="text" placeholder="APK_SURGEON_KEYSTORE"></label>
+            <label class="field"><span>Key Alias</span><input id="build-ks-alias" type="text" placeholder="surgeon"></label>
+            <label class="field"><span>Keystore Password</span><input id="build-ks-pass" type="password" placeholder="APK_SURGEON_KS_PASS"></label>
+          </div>
+        </details>
+      </section>
+
+      <!-- TAB: MERGE SPLITS -->
+      <section id="tab-merge" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Merge Split Bundle</h2>
+            <p class="muted">Combines .xapk/.apkm/.apks via APKEditor, normalizes extractNativeLibs, aligns 16 KiB, and signs.</p>
+          </div>
+          <button id="btn-run-merge" type="button" class="btn btn-primary">Merge &amp; Build</button>
+        </div>
+        <div class="two-col">
+          <label class="field">
+            <span>Target ABI</span>
+            <select id="merge-abi">
+              <option value="">All ABIs (warns if multiple remain)</option>
+              <option value="arm64-v8a">arm64-v8a</option>
+              <option value="armeabi-v7a">armeabi-v7a</option>
+              <option value="armeabi">armeabi</option>
+              <option value="x86_64">x86_64</option>
+              <option value="x86">x86</option>
+              <option value="riscv64">riscv64</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Output APK Path (optional)</span>
+            <input id="merge-output" type="text" placeholder="Leave blank for workspace download">
+          </label>
+        </div>
+        <div class="toggle-grid compact">
+          <label class="toggle-card">
+            <input type="checkbox" id="merge-unsigned">
+            <div><strong>Unsigned (--unsigned)</strong><span>Normalize and 16 KiB align without signing.</span></div>
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="merge-force">
+            <div><strong>Overwrite (--force)</strong><span>Allow replacing an existing output file.</span></div>
+          </label>
+        </div>
+      </section>
+
+      <!-- TAB: SIGN & VERIFY -->
+      <section id="tab-sign" class="tab-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <h2>Sign &amp; Verify</h2>
+            <p class="muted">Inspect existing signatures/alignment or strip stale stamps, 16 KiB align, and re-sign safely.</p>
+          </div>
+          <div class="btn-row">
+            <button id="btn-run-verify" type="button" class="btn btn-secondary">Verify Input APK/Bundle</button>
+            <button id="btn-run-sign" type="button" class="btn btn-primary">Align &amp; Sign New Copy</button>
+          </div>
+        </div>
+        <div class="two-col">
+          <label class="field">
+            <span>Signed Output Path (for Sign action; optional)</span>
+            <input id="sign-output" type="text" placeholder="Leave blank for workspace download">
+          </label>
+          <label class="toggle-card">
+            <input type="checkbox" id="sign-force">
+            <div><strong>Overwrite (--force)</strong><span>Still refuses modifying input APK in place.</span></div>
+          </label>
+        </div>
+        <details class="card">
+          <summary>Custom Keystore Options (optional)</summary>
+          <div class="three-col top-gap">
+            <label class="field"><span>Keystore Path</span><input id="sign-ks" type="text"></label>
+            <label class="field"><span>Key Alias</span><input id="sign-ks-alias" type="text" placeholder="surgeon"></label>
+            <label class="field"><span>Password</span><input id="sign-ks-pass" type="password"></label>
+          </div>
+        </details>
+        <div id="verify-box" class="card" hidden>
+          <h3>Verification Matrix</h3>
+          <div id="verify-results" class="stack-sm"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- RIGHT CONSOLE & ARTIFACT RAIL -->
+    <aside class="console-pane">
+      <div class="card console-card">
+        <div class="card-head">
+          <div>
+            <h3>Live Job Console</h3>
+            <span id="job-step" class="muted small">Idle</span>
+          </div>
+          <span id="job-timer" class="mono-badge">0.0s</span>
+        </div>
+        <div class="progress-track"><div id="job-progress" class="progress-fill"></div></div>
+        <div id="job-logs" class="log-stream">No active job yet.</div>
+      </div>
+
+      <div class="card">
+        <h3>Artifacts Shelf</h3>
+        <div id="artifact-list" class="stack-sm muted small">Completed builds, APKs, diffs, and reports appear here.</div>
+      </div>
+
+      <div class="card">
+        <h3>Session History</h3>
+        <div id="history-list" class="stack-sm muted small">No jobs run in this session yet.</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- TOOLCHAIN DOCTOR DRAWER -->
+  <div id="doctor-drawer" class="drawer" hidden>
+    <div class="drawer-backdrop" id="doctor-backdrop"></div>
+    <div class="drawer-panel">
+      <div class="card-head">
+        <h2>Toolchain Doctor</h2>
+        <button id="btn-close-doctor" type="button" class="btn btn-ghost btn-sm">Close</button>
+      </div>
+      <div id="doctor-tools" class="stack-sm"></div>
+      <div id="doctor-apkeditor" class="card"></div>
+      <div id="doctor-guides" class="card">
+        <h3>Install Commands</h3>
+        <div id="doctor-guides-list" class="stack-sm"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BUILT-IN ARTIFACT / REPORT / MANIFEST VIEWER MODAL -->
+  <div id="viewer-modal" class="modal" hidden>
+    <div class="drawer-backdrop" id="viewer-backdrop"></div>
+    <div class="modal-panel">
+      <div class="card-head">
+        <h3 id="viewer-title">Viewer</h3>
+        <div class="btn-row">
+          <button id="btn-copy-viewer" type="button" class="btn btn-secondary btn-sm">Copy Content</button>
+          <button id="btn-close-viewer" type="button" class="btn btn-ghost btn-sm">Close</button>
+        </div>
+      </div>
+      <div id="viewer-body" class="viewer-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
