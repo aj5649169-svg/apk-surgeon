@@ -5,6 +5,7 @@ from collections import defaultdict
 
 from lxml import etree
 
+from . import layout
 from .scanner import ANDROID, METHOD, RULES, components, parse_manifest
 
 
@@ -19,7 +20,7 @@ def patch_smali(text, signatures):
         locals_line = re.search(r"(?m)^([ \t]*)\.locals[ \t]+(\d+)[ \t]*(?:#[^\n]*)?$", m[2])
         if not re.fullmatch(r"[^\s()<>]+\((?:\[*(?:[ZBCSIFJD]|L[^;()\s]+;))*\)[VZ]", sig):
             return m[0]
-        if not locals_line or len(re.findall(r"(?m)^\s*\.(?:registers|locals)\b",m[2])) != 1:
+        if not locals_line or len(re.findall(r"(?m)^\s*\.(?:registers|locals)\b", m[2])) != 1:
             return m[0]
         if int(locals_line[2]) > 65535 or ".method " in m[2]:
             return m[0]
@@ -40,7 +41,7 @@ def patch_smali(text, signatures):
 PROVIDERS = {
     "com.google.firebase.provider.FirebaseInitProvider",
     "com.facebook.internal.FacebookInitProvider",
-    *(p for rule in RULES for p in rule.get("providers", [])),
+    *(provider for rule in RULES for provider in rule.get("providers", [])),
 }
 AD_PERMISSIONS = {
     "com.google.android.gms.permission.AD_ID",
@@ -49,23 +50,25 @@ AD_PERMISSIONS = {
 }
 
 
-def plan(root, hits, strip_ad_permissions=False, disable_providers=False, *, manifest=True):
+def plan(root, hits, strip_ad_permissions=False, disable_providers=False, *, manifest=True, recipe=None):
     changes = {}
-    if manifest:
-        path = root / "AndroidManifest.xml"
+    if manifest and layout.manifest(root):
+        path = layout.manifest(root)
         tree = parse_manifest(path)
-        allowed = {c for r in RULES for c in r["disable"]}
+        allowed = {component for rule in RULES for component in rule["disable"]}
+        if recipe:
+            allowed.update(recipe.disable_components)
         changed = False
         for node, name in components(tree):
             selected = name in allowed and node.tag in ("receiver", "service")
             selected |= disable_providers and node.tag == "provider" and name in PROVIDERS
-            if selected and node.get(ANDROID+"enabled") != "false":
-                node.set(ANDROID+"enabled", "false")
+            if selected and node.get(ANDROID + "enabled") != "false":
+                node.set(ANDROID + "enabled", "false")
                 changed = True
         if strip_ad_permissions:
-            for perm in tree.xpath("/manifest/uses-permission | /manifest/uses-permission-sdk-23"):
-                if perm.get(ANDROID+"name") in AD_PERMISSIONS:
-                    perm.getparent().remove(perm)
+            for permission in tree.xpath("/manifest/uses-permission | /manifest/uses-permission-sdk-23"):
+                if permission.get(ANDROID + "name") in AD_PERMISSIONS:
+                    permission.getparent().remove(permission)
                     changed = True
         if changed:
             changes[path] = etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"
@@ -83,14 +86,23 @@ def plan(root, hits, strip_ad_permissions=False, disable_providers=False, *, man
 
 def diff(root, changes):
     for path, new in changes.items():
+        if isinstance(new, bytes):
+            continue
         name = path.relative_to(root).as_posix()
-        yield from difflib.unified_diff(path.read_text(encoding="utf-8").splitlines(True),
-            new.splitlines(True), fromfile="a/"+name, tofile="b/"+name)
+        exists = path.exists()
+        before = path.read_text(encoding="utf-8").splitlines(True) if exists else []
+        fromfile = ("a/" + name) if exists else "/dev/null"
+        yield from difflib.unified_diff(before, new.splitlines(True), fromfile=fromfile, tofile="b/" + name)
 
 
 def apply(root, changes, backup):
+    backup.mkdir(parents=True, exist_ok=True)
     for path, text in changes.items():
-        dest = backup / (str(path.relative_to(root)) + ".bak")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dest)
+        if isinstance(text, bytes):
+            continue
+        if path.exists():
+            dest = backup / (str(path.relative_to(root)) + ".bak")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")

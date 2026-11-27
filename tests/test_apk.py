@@ -1,7 +1,6 @@
 """CI exercises a real APK round trip using the Android build tools."""
 import json
 import os
-from pathlib import Path
 import subprocess
 
 import pytest

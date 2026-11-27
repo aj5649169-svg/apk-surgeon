@@ -2,9 +2,15 @@
 
 Find known Android tracking SDKs, review an exact patch, and build a locally signed copy. Use it for personal privacy audits on APKs you own or have authorization to modify. Check licensing and distribution permissions before sharing modified software.
 
+`v0.4.0` is the release-hardening release: a second decode/rebuild engine for
+APKs whose resources defeat `aapt2`, selective multi-DEX patching, telemetry URL
+sinkholing, native-framework and Pairip detection, split-bundle merging, and
+opt-in power-user audit patches.
+
 ## Quick start
 
-Install Python 3.10+, Java 17, Apktool, and Android SDK Build Tools 35+ (including zipalign and apksigner). Run from a clone:
+Install Python 3.10+, Java 17, Apktool 3.0.3+, and Android SDK Build Tools 35+
+(including `zipalign` and `apksigner`). Run from a clone:
 
 ```sh
 pip install -e .
@@ -21,15 +27,170 @@ Example scan (abbreviated):
 SDK                  Package prefix                     Matched hooks
 Firebase Analytics   com.google.firebase.analytics      logEvent(Ljava/lang/String;Landroid/os/Bundle;)V
 Privacy Score: 96/100 (static SDK presence heuristic)
+Patch Safety Verdict: SAFE
+Engine: apktool decode: default
 ```
 
-The score subtracts four points per detected SDK family. Bundled code can be dormant. A score of 100 only means no built-in SDK evidence was found.
+The score subtracts four points per detected SDK family. Bundled code can be dormant. A score of 100 only means no built-in SDK evidence was found. When native
+code is present the score is printed with a caveat, because smali patches cannot
+reach Flutter, Unity, React Native or Xamarin/MAUI internals.
 
 ## Patch scope
 
-Scan inspects decoded manifest components and known package directories across DEX files. The cleaner disables explicitly allowlisted receiver/service names and inserts an early return into exact concrete smali signatures. Providers, constructors, native methods, register-based methods and boolean methods without a spare local are left alone. Some SDKs are detection-only, especially ad, attribution and notification products whose initialization can affect app startup. Encrypted strings, native telemetry, dynamic code and first-party analytics are outside this MVP.
+Scan inspects decoded manifest components and known package directories across every DEX file, in either decoded layout. The cleaner disables explicitly allowlisted receiver/service names and inserts an early return into exact concrete smali signatures. Providers, constructors, native methods, register-based methods and boolean methods without a spare local are left alone. Some SDKs are detection-only, especially ad, attribution and notification products whose initialization can affect app startup. Encrypted strings, native telemetry, dynamic code and first-party analytics are outside this scope.
 
-Signing reuses a local JKS at `~/.apk-surgeon/keystore.jks`. Back up this key and the adjacent password file securely. Both use owner-only permissions on POSIX. On Windows protect the directory with your user ACL. To reuse your own signing identity, set `APK_SURGEON_KEYSTORE`, `APK_SURGEON_ALIAS`, and `APK_SURGEON_PASSWORD` (same store and key password). A different signing certificate prevents updating over the publisher’s app and can break integrations and signature checks. Test on a spare device or emulator before relying on a cleaned app. Signature verification alone cannot establish launch behavior or tracking suppression.
+Signing reuses a local JKS at `~/.apk-surgeon/keystore.jks`. Back up this key and the adjacent password file securely. Both use owner-only permissions on POSIX. On Windows protect the directory with your user ACL. To reuse your own signing identity, set `APK_SURGEON_KEYSTORE`, `APK_SURGEON_ALIAS`, and `APK_SURGEON_PASSWORD` (same store and key password). A different signing certificate prevents updating over the publisher's app and can break integrations and signature checks. Test on a spare device or emulator before relying on a cleaned app. Signature verification alone cannot establish launch behavior or tracking suppression.
+
+## Engines (`--engine auto|apktool|apkeditor`)
+
+`--engine apktool` is the default workflow. `--engine apkeditor` decodes with
+[REAndroid/APKEditor](https://github.com/REAndroid/APKEditor) `V1.4.9`
+(Apache-2.0 ARSCLib) and rebuilds without `aapt2` at all, which is what you need
+for obfuscated resource tables:
+
+```sh
+curl -fsSL -o APKEditor-1.4.9.jar \
+  https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar
+apk-surgeon clean obfuscated.apk -o review/clean.apk --engine apkeditor --apkeditor-jar APKEditor-1.4.9.jar
+```
+
+APKEditor is detected through `--apkeditor-jar`, `APK_SURGEON_APKEDITOR_JAR`, or
+an `apkeditor` executable on `PATH`. `doctor` reports it as optional and never
+fails when it is absent.
+
+`--engine auto` (default) tries Apktool first. If decoding fails, or if the
+rebuild fails with a resource/`aapt2` error, the whole patch is re-applied on an
+APKEditor decode, so both `AndroidManifest.xml` and smali are still patched. The
+engine used and the fallback reason appear in the CLI output and in
+`privacy-report.md`. Without APKEditor the error message suggests
+`--apkeditor-jar` or `--smali-only`.
+
+APKEditor decodes resources in XML mode first, then retries `-t json` and
+`-t raw` when obfuscation defeats XML. In those modes resource XML files are not
+editable, which the report states explicitly.
+
+## Split bundles and `--merge-splits`
+
+```sh
+apk-surgeon clean app.xapk -o review/app.apks              # patch the base only
+apk-surgeon clean app.apkm --abi arm64-v8a -o review/app.apks
+apk-surgeon clean app.apks --merge-splits -o review/standalone.apk
+```
+
+`.xapk`, `.apkm` and `.apks` inputs must contain one already-selected install
+set. `aapt2` identifies the base by manifest metadata; only base code is scanned
+and patched, and every split is aligned and signed with the same key before the
+flat SAI-style archive is written. `--merge-splits` instead merges the selected
+splits (honouring `--abi`) into one standalone APK with
+`APKEditor m -clean-meta`, then runs the full scan/patch/align/sign pipeline on
+that single APK. Merging requires APKEditor. Universal `bundletool` variant
+collections, encrypted archives and OBB payloads are unsupported.
+
+Every repack, whichever engine produced it, strips stale signature and Play
+metadata (`META-INF/MANIFEST.MF`, `META-INF/*.SF|RSA|DSA|EC`,
+`META-INF/BNDLTOOL.*`, `stamp-cert-sha256`), keeps `resources.arsc` and all
+`lib/**/*.so` entries at `ZIP_STORED`, then runs `zipalign -P 16 -f 4` before
+`apksigner`. APKEditor aligns stored libraries at 4096 bytes only, so this step
+is mandatory for Android 15-16 16 KiB page compliance.
+
+## Selective multi-DEX patching (`--selective-dex`)
+
+```sh
+apk-surgeon clean big.apk --selective-dex --sinkhole -o review/big.apk
+```
+
+A pure-Python DEX string-pool scanner reads only the 112-byte header and
+`string_ids` table of each `classes*.dex` (bounds checked, MUTF-8 safe, DEX
+035-041). Only the DEX files that actually mention a tracker package, hook class
+or telemetry host are disassembled, patched and reassembled; the result is
+spliced back into a copy of the original APK so every other entry — including
+`resources.arsc`, `res/` and native libraries — keeps its exact bytes and
+compression flags. Any malformed DEX or failed splice falls back to a full
+decode. Selective mode patches DEX files only, so it refuses to run together
+with manifest-editing flags. `--smali-only` uses the same path automatically on
+multi-DEX APKs.
+
+## Telemetry sinkholing (`--sinkhole`)
+
+`scan` always lists sinkholeable URLs (and `--json` includes them). `clean
+--sinkhole` rewrites matching `const-string` / `const-string/jumbo` literals to
+`https://127.0.0.1/`, preserving the register and instruction form and never
+touching control flow — which is why it is safe for R8-minified and
+non-void/object-returning methods.
+
+Only a curated pure-telemetry allowlist is eligible: Google Analytics for
+Firebase measurement, AdMob/ad serving, Adjust, AppsFlyer, Mixpanel, Amplitude,
+Sentry ingest, Crashlytics, Microsoft telemetry, Braze, Segment, MIUI analytics,
+Flurry, Branch and legacy analytics buckets. Shared core domains
+(`googleapis.com`, `firebaseio.com`, `firestore.googleapis.com`,
+`identitytoolkit.googleapis.com`, `graph.facebook.com`, `googleusercontent.com`,
+`gstatic.com`, `cloudfront.net`, `amazonaws.com`, `apple.com`,
+`play.googleapis.com`) are hard-denied in code; a recipe that tries to add one
+fails with an explanation.
+
+## Frameworks, Pairip and the safety verdict
+
+`scan --json` reports `detected_frameworks` for Flutter (`libapp.so`,
+`libflutter.so`), Unity (`libil2cpp.so`, `libunity.so`), React Native
+(`libhermes.so`, `libreactnativejni.so`, `libjsc.so`) and Xamarin/MAUI
+(`libmonodroid.so`), across the base APK and splits.
+
+The verdict is one of:
+
+| Verdict | Meaning |
+| --- | --- |
+| `BLOCKED (Pairip VM)` | `com.pairip.*` classes or `libpairipcore.so` found. Static re-signing cannot work. |
+| `HIGH RISK` | Play Integrity / `StandardIntegrityManager`, Firebase App Check, or hardcoded `GET_SIGNING_CERTIFICATES` + digest checks. |
+| `CAUTION` | Certificate-bound OAuth/login (Google Sign-In, Facebook Login). |
+| `SAFE` | No known re-signing hazard found in the decoded code. |
+
+`clean` refuses a Pairip-protected APK even with `--yes`. The message names
+local VPN firewalls (RethinkDNS, TrackerControl) as the working alternative. The
+only override is an explicit `--force-unsafe`, and the override is recorded in
+`privacy-report.md`. A reference can be dormant and signature verification says
+nothing about launch behavior; device testing is still required.
+
+## Power-user audit flags
+
+```sh
+# Inspect your own traffic with mitmproxy / HTTP Toolkit / PCAPdroid
+apk-surgeon clean app.apk -o review/mitm.apk --trust-user-ca
+
+# Neutralize literal FLAG_SECURE window flags (screenshots on your own device)
+apk-surgeon clean app.apk -o review/shots.apk --allow-screenshots
+
+# Declarative extra patches
+apk-surgeon clean app.apk -o review/recipe.apk --recipe my-recipe.yml
+apk-surgeon clean app.apk --recipe my-recipe.yml --sinkhole -o review/both.apk
+```
+
+`--trust-user-ca` creates `res/xml/apk_surgeon_network_security_config.xml`
+trusting the `system` and `user` certificate stores and wires
+`android:networkSecurityConfig` on `<application>`. If the manifest already
+references a different config, the tool refuses instead of silently replacing
+it. It is ignored with a warning under `--smali-only`, because the manifest is
+not rebuilt in that mode.
+
+`--allow-screenshots` rewrites only an immediately-adjacent literal
+`const/16 vX, 0x2000` feeding `Window;->setFlags(II)V` or `addFlags(I)V`. Any
+dynamic bitmask (an `or-int`, a computed flag) is left untouched.
+
+`--recipe` accepts strict YAML (`PyYAML`):
+
+```yaml
+version: 1
+package_prefixes: [com.example.tracker]
+methods:
+  - class: Lcom/example/tracker/Track;
+    method: send(Ljava/lang/String;)V
+  - Lcom/example/tracker/More;->log()V
+disable_components: [com.example.tracker.Receiver]
+sinkhole_domains: [api.segment.io]
+```
+
+Unknown fields, non-concrete signatures, malformed packages, protected sinkhole
+domains and YAML syntax errors fail with the offending field and, where YAML
+provides it, the line and column.
 
 ## Optional local review
 
@@ -37,65 +198,46 @@ Signing reuses a local JKS at `~/.apk-surgeon/keystore.jks`. Back up this key an
 apk-surgeon clean app.apk -o review/app-clean.apk --ai --llm-url http://localhost:11434/v1 --model qwen3:4b
 ```
 
-Only candidate method snippets are sent to the local endpoint (up to 12 methods, 12,000 characters each). The analyzer accepts structured JSON findings. With --ai they remain advisory. --ai-patch offers each eligible exact method diff separately. Even with --yes, each proposal requires y/n/q. The tool generates the instructions itself and rebuilds in scratch before publishing output. Review semantics carefully; a valid no-op can still break application behavior. Keep the server and its logs private.
+Only candidate method snippets are sent to the local endpoint (up to 12 methods, 12,000 characters each). The analyzer accepts structured JSON findings. With `--ai` they remain advisory. `--ai-patch` offers each eligible exact method diff separately. Even with `--yes`, each proposal requires y/n/q. The tool generates the instructions itself and rebuilds in scratch before publishing output. Review semantics carefully; a valid no-op can still break application behavior. Keep the server and its logs private.
+
+## Verification
+
+```sh
+apk-surgeon scan release.apk --json > scan.json
+apk-surgeon verify review/app.apks --json
+```
+
+Each APK must pass `apksigner` verification, stored-file alignment (4 bytes, or
+16 KiB for stored native libraries) and resource-table storage checks. Every
+split must have the base signer set. JSON includes signer SHA-256 digests,
+per-scheme status, per-APK errors and overall success. An unreported scheme is
+`null`; detached v4 signatures need the matching `.idsig` file and are usually
+absent from distributed bundles. Failure exits nonzero.
 
 ## Development
 
 ```sh
 pip install -e '.[test]'
 pytest -q
+ruff check .
 ```
 
-CI also builds a synthetic APK, runs scan and clean, verifies the resulting signature and decodes its manifest again. Run the same integration test locally with the tools on PATH and `TEST_ANDROID_JAR` pointing to an SDK platform android.jar.
+CI builds synthetic APKs, then exercises Apktool and APKEditor round trips,
+`--merge-splits`, `--selective-dex`, `--sinkhole`, Pairip `BLOCKED` plus
+`--force-unsafe`, framework detection, `--trust-user-ca`, `--allow-screenshots`,
+`--recipe` and `verify --json` (including 16 KiB `.so` alignment and
+`apksigner` validity). Run the same suite locally with Java, the Android tools on
+`PATH`, `TEST_ANDROID_JAR` pointing at an SDK `android.jar`, and
+`APK_SURGEON_APKEDITOR_JAR` pointing at `APKEditor-1.4.9.jar`.
 
-## v0.2 workflows
+Use Apktool 3.0.3 or newer (CVE-2026-39973 affects 3.0.0/3.0.1) and Android
+Build Tools 35+. The legacy `zipalign` fallback is accepted only if the resulting
+resource table and stored native libraries actually satisfy alignment checks.
+ZIP alignment cannot fix an incompatible ELF binary.
 
-```sh
-apk-surgeon scan app.apk --tracker-db exodus-trackers.json
-apk-surgeon clean app.xapk -o review/app-cleaned.apks --strip-ad-permissions
-apk-surgeon clean app.apk -o review/clean.apk --ai-patch
-apk-surgeon clean app.apk --keystore my.jks --ks-alias release
-```
+## License and scope
 
-Use APK_SURGEON_KS_PASS for custom keys; --ks-pass is also accepted but can enter shell history. Updates require the same certificate, package name and compatible version codes. v0.1 temporary signing identities cannot be recovered.
-
-ZIP-based APKS, APKM and XAPK inputs must contain one already-selected install set. aapt2 identifies the base by manifest metadata. Only base code is scanned and patched. All splits are aligned and signed with the same key, then packaged as a flat SAI-style archive. For adb, extract the archive and run adb install-multiple -r with all APK paths. Universal bundletool variant collections, encrypted archives and OBB payloads are unsupported.
-
-The local Exodus database adds detection-only code and network regex matches; use a trusted database. The built-in score still counts curated SDK families. --strip-ad-permissions removes the three supported ad identifier/attribution permissions. --disable-providers explicitly opts into disabling known Firebase, Facebook and Sentry startup providers. This can affect non-analytics features. Shared WorkManager and AndroidX Startup infrastructure stays enabled. An empty patch list produces no output.
-
-Use Apktool 3.0.2 or newer and Android Build Tools 35+. Legacy zipalign fallback is accepted only if the resulting resource table and stored native libraries actually satisfy alignment checks. ZIP alignment cannot fix an incompatible ELF binary.
-
-## Release APK workflows (v0.3.0)
-
-```sh
-apk-surgeon scan release.apk --json > scan.json
-apk-surgeon clean release.apk --smali-only -o reviewed/release.apk
-apk-surgeon clean app.apkm --abi arm64-v8a -o reviewed-splits/app.apks
-apk-surgeon verify reviewed-splits/app.apks --json
-```
-
-**Resources.** If aapt2 cannot rebuild an obfuscated resource tree, retry with
-`--smali-only`. Apktool skips resource decoding. Only assembled DEX files are
-taken from the rebuild. The compiled manifest, resource table and resource payloads
-retain their original bytes. Manifest scanning and all manifest edits are skipped.
-
-**Patch Safety Verdict.** SAFE means the scanner found no known re-signing
-hazards in the base APK's decoded code. CAUTION flags certificate-bound login.
-HIGH RISK flags integrity APIs or certificate inspection. A reference can be
-dormant. The verdict appears before approval and in the report. Runtime testing
-is still needed. Endpoint and manifest-key evidence can identify SDK families
-after obfuscation. Shared endpoints can also serve ordinary app features.
-These matches alone never authorize a method edit.
-
-**Split installs.** ABI filtering uses Android configuration split IDs and keeps
-the base, features, language and density splits. Omit `--abi` to retain every ABI.
-Select the device ABI for an adb install. Non-APK catalog metadata and icons are
-ignored when converting to flat APKS. Open the output with SAI, or extract it in
-an empty directory and run `adb install-multiple ./*.apk`.
-
-**Verification.** Each APK must pass apksigner verification, stored-file alignment
-(4 bytes, or 16 KiB for stored native libraries), and resource-table storage checks.
-Every split must have the base signer set. JSON includes signer SHA-256 digests,
-scheme status reported by the installed tools, per-APK errors and overall success.
-An unreported scheme is null. Detached v4 signatures require the corresponding
-.idsig file and are usually absent from distributed bundles. Failure exits nonzero.
+APK Surgeon is MIT licensed. APKEditor is a separate Apache-2.0 project that the
+tool invokes as an external process; it is not bundled or redistributed. Only
+use this on software you own or are authorized to modify, and respect the
+publisher's terms before sharing a modified build.

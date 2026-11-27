@@ -1,14 +1,18 @@
 import json
+import shutil
 import subprocess
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from apk_surgeon import signing, llm
-from apk_surgeon.patcher import plan, patch_smali
+import pytest
+
+from apk_surgeon import llm, signing
+from apk_surgeon.patcher import patch_smali, plan
 from apk_surgeon.scanner import ANDROID, exodus
 
 
+@pytest.mark.skipif(shutil.which("keytool") is None, reason="keytool from a JDK is not installed")
 def test_persistent_key(tmp_path,monkeypatch):
     monkeypatch.setenv("HOME",str(tmp_path))
     args = SimpleNamespace(keystore=None,ks_alias=None,ks_pass=None)
