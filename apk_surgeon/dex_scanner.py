@@ -247,19 +247,59 @@ def find_matches(apk, needles):
     needles = sorted({needle for needle in needles if needle})
     if not needles:
         return {}
+    ascii_needles = [(n, n.encode("ascii")) for n in needles if n.isascii() and "\x00" not in n]
+    complex_needles = [n for n in needles if not (n.isascii() and "\x00" not in n)]
     matches = {}
     with zipfile.ZipFile(apk) as archive:
         for name in dex_entries(archive):
             try:
                 data = _read_dex(archive, name)
-                pool = list(strings(data))
+                hit = _scan_dex_strings(data, ascii_needles, complex_needles)
             except (DexError, OSError):
                 matches.setdefault(name, set()).add("<malformed>")
                 continue
-            hit = {needle for needle in needles if any(needle in value for value in pool)}
             if hit:
                 matches[name] = hit
     return {name: sorted(values) for name, values in sorted(matches.items())}
+
+
+def _scan_dex_strings(data, ascii_needles, complex_needles):
+    """Validate string table structure and match needles without eager full-pool MUTF-8 decoding."""
+    headers = list(iter_headers(data))
+    header_ranges = [(h.header_offset, h.header_offset + h.header_size) for h in headers]
+    rem_ascii = list(ascii_needles)
+    rem_complex = list(complex_needles)
+    hit = set()
+    for header in headers:
+        end_limit = header.container_size if header.version >= 41 else header.file_size
+        min_off = HEADER_SIZE if header.version >= 41 else header.header_size
+        for index in range(header.string_ids_size):
+            offset = _u32(data, header.string_ids_off + 4 * index)
+            if offset < min_off or offset >= end_limit or any(start <= offset < stop for start, stop in header_ranges):
+                raise DexError(f"string_data_item offset {offset} out of bounds")
+            utf16_size, cursor = uleb128(data, offset)
+            if utf16_size > MAX_UTF16_UNITS:
+                raise DexError("string longer than the sanity limit")
+            end = data.find(b"\x00", cursor, end_limit)
+            if end < 0:
+                raise DexError("unterminated string_data_item")
+            if end - cursor > MAX_STRING_BYTES:
+                raise DexError("string bytes exceed the sanity limit")
+            if not rem_ascii and not rem_complex:
+                continue
+            raw = data[cursor:end]
+            if rem_ascii:
+                matched_ascii = [item for item in rem_ascii if item[1] in raw]
+                for item in matched_ascii:
+                    hit.add(item[0])
+                    rem_ascii.remove(item)
+            if rem_complex:
+                decoded = mutf8_decode(raw)
+                matched_complex = [needle for needle in rem_complex if needle in decoded]
+                for needle in matched_complex:
+                    hit.add(needle)
+                    rem_complex.remove(needle)
+    return hit
 
 
 def trailer_ok(data):

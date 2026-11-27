@@ -3,9 +3,34 @@ import re
 import struct
 import subprocess
 import zipfile
+from pathlib import Path
 
-from . import engines
+from . import binary, engines
 from .signing import check_layout
+
+
+def _elf_alignment_warnings(apk):
+    warnings = []
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            for item in archive.infolist():
+                if not (item.filename.startswith("lib/") and item.filename.endswith(".so")):
+                    continue
+                parts = Path(item.filename).parts
+                abi = parts[1] if len(parts) >= 3 else ""
+                with archive.open(item) as stream:
+                    elf = binary.inspect_elf_alignment(stream)
+                if elf is None:
+                    continue
+                is_64 = elf["bits"] == 64 or abi in binary.ARCH_64_ABIS
+                if is_64 and not elf["aligned_16k"]:
+                    warnings.append(
+                        f"{item.filename} ELF PT_LOAD alignment is {elf['min_align']} bytes "
+                        "(< 16384 required for Android 15+ 16 KiB page devices)."
+                    )
+    except (OSError, zipfile.BadZipFile):
+        pass
+    return warnings
 
 
 def verify(parts):
@@ -14,7 +39,7 @@ def verify(parts):
     results = []
     for part in parts:
         engines.check_cancelled("APK verification")
-        row = {"apk": part.name, "errors": [], "certificates_sha256": [], "schemes": {}}
+        row = {"apk": part.name, "errors": [], "warnings": [], "certificates_sha256": [], "schemes": {}}
         sidecar = part.with_suffix(".apk.idsig")
         flags = ["--v4-signature-file", str(sidecar)] if sidecar.is_file() else []
         try:
@@ -44,7 +69,12 @@ def verify(parts):
         except (ValueError, struct.error, zipfile.BadZipFile) as error:
             row["aligned"] = False
             row["errors"].append(str(error))
+        row["warnings"] = _elf_alignment_warnings(part)
         if results and results[0]["certificates_sha256"] != row["certificates_sha256"]:
             row["errors"].append("Signing certificates differ from base.apk")
         results.append(row)
-    return {"ok": all(not row["errors"] for row in results), "apks": results}
+    return {
+        "ok": all(not row["errors"] for row in results),
+        "warnings": [msg for row in results for msg in row["warnings"]],
+        "apks": results,
+    }

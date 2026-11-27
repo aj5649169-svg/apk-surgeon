@@ -237,9 +237,13 @@
     clear(storage);
     const arsc = data.resources_arsc || {};
     const enl = data.extract_native_libs === null ? "unset" : String(data.extract_native_libs);
+    const elfLabel = (data.native_libs?.elf_checked || 0) > 0
+      ? (data.native_libs.elf_16k_aligned ? "PASS (all >= 16 KiB)" : `WARN (${(data.native_libs.elf_unaligned || []).length} < 16 KiB)`)
+      : "none";
     storage.append(
       kvRow("resources.arsc", arsc.present ? (arsc.stored ? "ZIP_STORED (OK)" : `${arsc.compress_type} (Needs Fix)`) : "absent"),
       kvRow("Native libs (.so)", `${data.native_libs?.count || 0} (stored: ${data.native_libs?.all_stored})`),
+      kvRow("16 KiB ELF PT_LOAD", elfLabel),
       kvRow("extractNativeLibs", enl),
       kvRow("ABIs", data.abis?.length ? data.abis.join(", ") : "none (Java-only)")
     );
@@ -354,6 +358,7 @@
         kvRow("16 KiB Alignment", row.aligned ? "PASS" : "FAIL"),
         kvRow("Schemes", schemes),
         kvRow("Cert SHA-256", (row.certificates_sha256 || []).join(", ") || "none"),
+        ...(row.warnings || []).map((warn) => el("div", { className: "log-warn small" }, warn)),
         ...(row.errors || []).map((err) => el("div", { className: "log-err small" }, err))
       ));
     }
