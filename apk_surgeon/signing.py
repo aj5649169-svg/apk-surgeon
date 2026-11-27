@@ -38,7 +38,8 @@ def resolve_identity(*, keystore=None, ks_alias=None, ks_pass=None):
                                             "-storepass:env", "KS_SECRET", "-keypass:env", "KS_SECRET",
                                             "-alias", alias, "-keyalg", "RSA", "-keysize", "3072",
                                             "-validity", "3650", "-dname", "CN=APK Surgeon Local"],
-                                           env={**os.environ, "KS_SECRET": password}, check=True)
+                                           env={**os.environ, "KS_SECRET": password},
+                                           check=True, capture_output=True, text=True)
                             new.chmod(0o600)
                             secret = Path(tmp) / "password"
                             secret.touch(mode=0o600)
@@ -77,7 +78,10 @@ def align(source, dest):
         message = result.stderr + result.stdout
         if not re.search(r"(unknown|invalid|unrecognized|illegal) option", message, re.I):
             raise ValueError("zipalign failed: " + message)
-        subprocess.run(["zipalign", "-p", "-f", "4", str(source), str(dest)], check=True)
+        subprocess.run(
+            ["zipalign", "-p", "-f", "4", str(source), str(dest)],
+            check=True, capture_output=True, text=True,
+        )
     check_layout(dest)
 
 
@@ -98,8 +102,12 @@ def finalize(source, work, dest, *, credentials=None, unsigned=False):
     key, alias, env = credentials
     subprocess.run(["apksigner", "sign", "--ks", str(key), "--ks-key-alias", alias,
                     "--ks-pass", "env:KS_SECRET", "--key-pass", "env:KS_SECRET",
-                    "--out", str(dest), str(aligned)], check=True, env=env)
-    subprocess.run(["apksigner", "verify", "--verbose", str(dest)], check=True)
+                    "--out", str(dest), str(aligned)],
+                   check=True, env=env, capture_output=True, text=True)
+    subprocess.run(
+        ["apksigner", "verify", "--verbose", str(dest)],
+        check=True, capture_output=True, text=True,
+    )
     check_layout(dest)
     return dest
 

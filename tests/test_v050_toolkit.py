@@ -151,7 +151,10 @@ def test_sign_refuses_in_place_and_strips_metadata(tmp_path, monkeypatch, dex_by
     monkeypatch.setattr(signing, "align", lambda s, d: repack.repack(s, d))
     monkeypatch.setattr(signing, "check_layout", lambda p: None)
 
+    seen_kwargs = []
+
     def fake_run(cmd, **kwargs):
+        seen_kwargs.append(kwargs)
         if cmd[:2] == ["apksigner", "sign"]:
             out_path = cmd[cmd.index("--out") + 1]
             repack.repack(cmd[-1], out_path)
@@ -164,6 +167,7 @@ def test_sign_refuses_in_place_and_strips_metadata(tmp_path, monkeypatch, dex_by
     out = tmp_path / "signed.apk"
     res = toolkit.sign_apk(apk, out)
     assert res["ok"] and res["signed"]
+    assert all(kw.get("capture_output") is True for kw in seen_kwargs)
     with zipfile.ZipFile(out) as archive:
         info = {i.filename: i for i in archive.infolist()}
         assert info["resources.arsc"].compress_type == zipfile.ZIP_STORED
