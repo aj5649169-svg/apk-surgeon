@@ -89,15 +89,20 @@ def diff(root, changes):
         if isinstance(new, bytes):
             continue
         name = path.relative_to(root).as_posix()
-        yield from difflib.unified_diff(path.read_text(encoding="utf-8").splitlines(True),
-                                        new.splitlines(True), fromfile="a/" + name, tofile="b/" + name)
+        exists = path.exists()
+        before = path.read_text(encoding="utf-8").splitlines(True) if exists else []
+        fromfile = ("a/" + name) if exists else "/dev/null"
+        yield from difflib.unified_diff(before, new.splitlines(True), fromfile=fromfile, tofile="b/" + name)
 
 
 def apply(root, changes, backup):
+    backup.mkdir(parents=True, exist_ok=True)
     for path, text in changes.items():
         if isinstance(text, bytes):
             continue
-        dest = backup / (str(path.relative_to(root)) + ".bak")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dest)
+        if path.exists():
+            dest = backup / (str(path.relative_to(root)) + ".bak")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")

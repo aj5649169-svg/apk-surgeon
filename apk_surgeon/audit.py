@@ -6,6 +6,7 @@ device).  ``--allow-screenshots`` removes only unambiguous ``FLAG_SECURE``
 (0x2000) window flag calls; dynamic bitmask expressions are left untouched.
 """
 
+import io
 import re
 from pathlib import Path
 
@@ -64,13 +65,19 @@ def merge_config(text):
     return etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"
 
 
-def trust_user_ca(root):
+def trust_user_ca(root, *, manifest_text=None):
     """Return changes installing or merging a user-CA network security config."""
     root = Path(root)
     manifest = layout.manifest(root)
     if manifest is None:
         raise ValueError("--trust-user-ca needs a decoded AndroidManifest.xml")
-    tree = parse_manifest(manifest)
+    if manifest_text is not None:
+        tree = etree.parse(
+            io.BytesIO(manifest_text.encode("utf-8")),
+            etree.XMLParser(resolve_entities=False, no_network=True),
+        )
+    else:
+        tree = parse_manifest(manifest)
     if tree.docinfo.doctype:
         raise ValueError("Manifest DTD is unsupported")
     config = config_path(root)

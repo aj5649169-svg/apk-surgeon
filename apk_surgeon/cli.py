@@ -162,17 +162,20 @@ def prepare(args, apk, work, engine, *, apkeditor, recipe, notes, bypass, apks=N
         dexes = {int(name[7:-4] or 1) for name in matched} if matched else None
         stats["sinkholed"] = sinkhole_changes(changes, root, dexes=dexes)
     if getattr(args, "allow_screenshots", False):
-        patch, count = audit.allow_screenshots(root)
-        for path, text in patch.items():
-            changes[path] = text
-        stats["screenshots"] = count
+        total = 0
+        for path in layout.smali_files(root):
+            text = changes[path] if path in changes else path.read_text(encoding="utf-8")
+            if "0x2000" in text:
+                total += _edit(changes, path, audit.allow_screenshots_text)
+        stats["screenshots"] = total
     if getattr(args, "trust_user_ca", False) and not bypass:
         if decoded.decode_type not in (None, "xml"):
             raise ValueError(
                 "--trust-user-ca needs editable XML resources, but APKEditor decoded them as "
                 f"{decoded.decode_type}. Use --engine apktool or a non-obfuscated APK."
             )
-        audit_changes, _ = audit.trust_user_ca(root)
+        manifest_path = layout.manifest(root)
+        audit_changes, _ = audit.trust_user_ca(root, manifest_text=changes.get(manifest_path))
         changes.update(audit_changes)
     metadata = root / "apktool.yml"
     if not bypass and metadata.exists():

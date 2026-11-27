@@ -443,3 +443,58 @@ def test_rebuild_original_splices_dex_and_cli_passes_original_on_smali_only(tmp_
     monkeypatch.setattr(rebuild, "rebuild", lambda r, o, original=None, **k: seen.setdefault("orig", original) or o)
     cli.rebuild_with("apktool", "apktool", tmp_path / "root", out, apkeditor=None, original=orig)
     assert seen["orig"] == orig
+
+
+def test_prepare_and_patcher_handle_new_config_and_concurrent_edits(tmp_path, monkeypatch, dex_bytes):
+    from apk_surgeon import cli, patcher
+
+    apk = tmp_path / "app.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("classes.dex", dex_bytes(["a"]))
+    root = tmp_path / "decoded"
+    smali = root / "smali/com/google/firebase/analytics/FirebaseAnalytics.smali"
+    smali.parent.mkdir(parents=True)
+    smali.write_text(
+        ".class public Lcom/google/firebase/analytics/FirebaseAnalytics;\n"
+        ".method public logEvent(Ljava/lang/String;Landroid/os/Bundle;)V\n"
+        "    .locals 1\n    const/4 v0, 0x1\n    return-void\n.end method\n"
+        ".method public lock(Landroid/view/Window;)V\n"
+        "    .locals 1\n    const/16 v0, 0x2000\n"
+        "    invoke-virtual {p1, v0}, Landroid/view/Window;->addFlags(I)V\n    return-void\n.end method\n"
+    )
+    other = root / "smali/com/example/Other.smali"
+    other.parent.mkdir(parents=True)
+    other.write_text(
+        ".class public Lcom/example/Other;\n"
+        ".method public static keep()V\n    .locals 0\n    const/4 v0, 0x0\n    return-void\n.end method\n"
+    )
+    (root / "AndroidManifest.xml").write_text(
+        f'<manifest xmlns:android="{ANDROID[1:-1]}" package="org.example"><application>'
+        '<receiver android:name="com.google.android.gms.measurement.AppMeasurementReceiver"/>'
+        "</application></manifest>"
+    )
+    recipe = recipes.load(write_recipe(tmp_path, "version: 1\nmethods:\n  - Lcom/example/Other;->keep()V\n"))
+    monkeypatch.setattr(cli.engines, "decode_apktool", lambda *a, **k: engines.DecodeResult("apktool", root))
+    args = SimpleNamespace(
+        engine="apktool", sinkhole=False, allow_screenshots=True, trust_user_ca=True,
+        strip_ad_permissions=False, disable_providers=False, smali_only=False,
+    )
+    result = cli.prepare(
+        args, apk, tmp_path / "work", "apktool", apkeditor=None, recipe=recipe, notes=[], bypass=False,
+    )
+    changes = result["changes"]
+    assert "Recipe: com.example.Other" in result["hits"]
+    assert "return-void\n    const/4" in changes[smali]
+    assert "const/16 v0, 0x0" in changes[smali]
+    config = root / "res/xml/apk_surgeon_network_security_config.xml"
+    assert config in changes and not config.exists()
+    diff_text = "".join(patcher.diff(root, changes))
+    assert "apk_surgeon_network_security_config.xml" in diff_text
+    backup = tmp_path / "backup"
+    patcher.apply(root, changes, backup)
+    assert config.is_file()
+    tree = parse_manifest(root / "AndroidManifest.xml")
+    assert tree.getroot().find("application").get(ANDROID + "networkSecurityConfig") == (
+        "@xml/apk_surgeon_network_security_config"
+    )
+    assert tree.xpath("//receiver")[0].get(ANDROID + "enabled") == "false"

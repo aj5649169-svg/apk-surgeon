@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -24,7 +25,11 @@ NEEDS_APKEDITOR = pytest.mark.skipif(
 
 
 def run(*args, check=True):
-    return subprocess.run([str(arg) for arg in args], check=check, text=True, capture_output=True)
+    result = subprocess.run([str(arg) for arg in args], text=True, capture_output=True)
+    if check and result.returncode:
+        sys.stderr.write(result.stdout + "\n" + result.stderr)
+        result.check_returncode()
+    return result
 
 
 def cli(*args, check=True):

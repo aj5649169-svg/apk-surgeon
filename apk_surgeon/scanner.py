@@ -72,7 +72,7 @@ def scan(root, *, manifest=True, recipe=None):
         descriptor = cls[1]
         for rule in effective:
             prefix = rule["prefix"].replace(".", "/")
-            if not descriptor.startswith("L" + prefix + "/"):
+            if not (descriptor.startswith("L" + prefix + "/") or descriptor == "L" + prefix + ";"):
                 continue
             hit = hits[rule["name"]]
             hit.classes += 1
