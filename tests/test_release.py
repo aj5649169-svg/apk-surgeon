@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -57,8 +58,11 @@ def test_bad_alignment_and_mismatched_certificates(tmp_path, monkeypatch):
 def test_resource_bypass_roundtrip(tmp_path, monkeypatch):
     import re
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     def run(*args):
-        return subprocess.check_output(list(map(str, args)), text=True)
+        argv = [str(arg) for arg in args]
+        argv[0] = shutil.which(argv[0]) or argv[0]
+        return subprocess.check_output(argv, text=True)
     manifest = tmp_path / "AndroidManifest.xml"
     manifest.write_text(f'<manifest xmlns:android="{ANDROID[1:-1]}" package="org.example.fixture">'
                         '<uses-sdk android:minSdkVersion="23"/><application android:label="fixture"/></manifest>')
