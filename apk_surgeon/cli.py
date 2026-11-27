@@ -50,7 +50,10 @@ Use maintained tools. On Windows, run from PowerShell or cmd with the Android to
 
 
 def run(*args):
-    subprocess.run([str(arg) for arg in args], check=True, stdout=sys.stderr)
+    argv = [str(arg) for arg in args]
+    if argv:
+        argv[0] = engines.resolve_executable(argv[0])
+    subprocess.run(argv, check=True, stdout=sys.stderr)
 
 
 def show(hits, family_count):
@@ -72,11 +75,18 @@ def show(hits, family_count):
 def doctor(args):
     for tool in TOOLS:
         console.print(tool, shutil.which(tool) or "missing")
-    if shutil.which("apktool"):
-        version = subprocess.check_output(["apktool", "--version"], text=True).strip()
-        match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
-        if not match or tuple(map(int, match.groups())) < (3, 0, 3):
-            console.print("Warning: upgrade Apktool to 3.0.3 or newer. CVE-2026-39973 affects 3.0.0 and 3.0.1.")
+    apktool_bin = shutil.which("apktool")
+    if apktool_bin:
+        try:
+            version = subprocess.check_output(
+                [apktool_bin, "--version"], stderr=subprocess.STDOUT, text=True, timeout=15
+            ).strip()
+        except (OSError, subprocess.SubprocessError) as error:
+            console.print(f"Warning: apktool health check failed: {error}")
+        else:
+            match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
+            if not match or tuple(map(int, match.groups())) < (3, 0, 3):
+                console.print("Warning: upgrade Apktool to 3.0.3 or newer. CVE-2026-39973 affects 3.0.0 and 3.0.1.")
     try:
         target = engines.resolve_apkeditor(args.apkeditor_jar)
     except engines.EngineError as error:

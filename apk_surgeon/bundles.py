@@ -3,6 +3,8 @@ import shutil
 import subprocess
 import zipfile
 
+from . import engines
+
 ABIS = ("arm64-v8a", "armeabi-v7a", "armeabi", "x86_64", "x86", "riscv64", "mips64", "mips")
 
 
@@ -12,6 +14,7 @@ def unpack(source, work):
         return [source]
     if source.suffix.lower() not in {".apks",".xapk",".apkm"}:
         raise ValueError("Expected APK or ZIP-based APKS/XAPK/APKM")
+    aapt2 = engines.resolve_executable("aapt2")
     parts = {}
     identity = None
     with zipfile.ZipFile(source) as archive:
@@ -24,7 +27,17 @@ def unpack(source, work):
             path = work/f"part-{len(parts)}.apk"
             with archive.open(entry) as src, path.open("wb") as dst:
                 shutil.copyfileobj(src,dst)
-            dump = subprocess.check_output(["aapt2","dump","badging",str(path)],text=True)
+            try:
+                dump = subprocess.check_output(
+                    [aapt2, "dump", "badging", str(path)], stderr=subprocess.STDOUT, text=True
+                )
+            except FileNotFoundError as error:
+                raise ValueError(
+                    "aapt2 executable not found on PATH; install Android SDK build-tools and add it to PATH."
+                ) from error
+            except subprocess.CalledProcessError as error:
+                detail = (error.output or "").strip()[:400]
+                raise ValueError(f"aapt2 failed inspecting split {entry.filename}: {detail}") from error
             metadata = re.search(r"^package: (.*)$",dump,re.M)
             if not metadata:
                 raise ValueError("Unreadable split metadata")

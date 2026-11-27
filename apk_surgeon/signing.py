@@ -6,10 +6,40 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import threading
+import time
 import zipfile
 from pathlib import Path
 
-from . import repack
+from . import engines, repack
+
+_KEYGEN_LOCK = threading.Lock()
+
+
+def _acquire_key_lock(lock, key):
+    """Create and immediately close ``lock``, recovering abandoned locks on Windows/POSIX."""
+    deadline = time.monotonic() + 15.0
+    while True:
+        try:
+            with lock.open("x") as handle:
+                handle.write(f"{os.getpid()}\n")
+            return True
+        except FileExistsError:
+            if key.exists():
+                return False
+            try:
+                stat = lock.stat()
+            except FileNotFoundError:
+                continue
+            age = time.time() - stat.st_mtime
+            if age > 30.0 or (stat.st_size == 0 and age > 2.0):
+                lock.unlink(missing_ok=True)
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for signing keystore lock at {lock}; remove it if no signing job is active."
+                ) from None
+            time.sleep(0.1)
 
 
 def resolve_identity(*, keystore=None, ks_alias=None, ks_pass=None):
@@ -20,35 +50,55 @@ def resolve_identity(*, keystore=None, ks_alias=None, ks_pass=None):
     if supplied:
         key = Path(supplied).expanduser().resolve(strict=True)
         if not password:
-            raise ValueError("Set APK_SURGEON_KS_PASS for the supplied keystore")
+            raise ValueError("Set APK_SURGEON_KS_PASS or supply ks_pass for the provided keystore")
     else:
         directory = Path.home() / ".apk-surgeon"
         directory.mkdir(mode=0o700, exist_ok=True)
         key = directory / "keystore.jks"
         credential = directory / "keystore.pass"
-        if not key.exists():
-            lock = directory / "creating-key.lock"
-            with lock.open("x"):
+        with _KEYGEN_LOCK:
+            if not key.exists():
+                lock = directory / "creating-key.lock"
+                acquired = _acquire_key_lock(lock, key)
                 try:
                     if not key.exists():
                         password = password or secrets.token_urlsafe(32)
                         with tempfile.TemporaryDirectory(dir=directory) as tmp:
                             new = Path(tmp) / "key"
-                            subprocess.run(["keytool", "-genkeypair", "-storetype", "JKS", "-keystore", str(new),
-                                            "-storepass:env", "KS_SECRET", "-keypass:env", "KS_SECRET",
-                                            "-alias", alias, "-keyalg", "RSA", "-keysize", "3072",
-                                            "-validity", "3650", "-dname", "CN=APK Surgeon Local"],
-                                           env={**os.environ, "KS_SECRET": password},
-                                           check=True, capture_output=True, text=True)
+                            keytool = engines.resolve_executable("keytool")
+                            try:
+                                subprocess.run(
+                                    [keytool, "-genkeypair", "-storetype", "JKS", "-keystore", str(new),
+                                     "-storepass:env", "KS_SECRET", "-keypass:env", "KS_SECRET",
+                                     "-alias", alias, "-keyalg", "RSA", "-keysize", "3072",
+                                     "-validity", "3650", "-dname", "CN=APK Surgeon Local"],
+                                    env={**os.environ, "KS_SECRET": password},
+                                    check=True, capture_output=True, text=True,
+                                )
+                            except FileNotFoundError as error:
+                                raise ValueError(
+                                    f"Signing failed: 'keytool' executable not found on PATH ({error})."
+                                ) from error
+                            except subprocess.CalledProcessError as error:
+                                detail = (error.stderr or error.stdout or "").strip()
+                                raise ValueError(
+                                    f"keytool failed creating signing key (exit {error.returncode}): {detail}".strip()
+                                ) from error
                             new.chmod(0o600)
                             secret = Path(tmp) / "password"
                             secret.touch(mode=0o600)
-                            secret.write_text(password)
+                            secret.write_text(password, encoding="utf-8")
                             secret.replace(credential)
                             new.replace(key)
                 finally:
-                    lock.unlink()
-        password = password or credential.read_text()
+                    if acquired:
+                        lock.unlink(missing_ok=True)
+        if not password:
+            if not credential.is_file():
+                raise ValueError(
+                    f"Signing keystore exists at {key} without {credential}; pass --ks-pass or remove {key}."
+                )
+            password = credential.read_text(encoding="utf-8")
     return key, alias, {**os.environ, "KS_SECRET": password}
 
 
@@ -72,16 +122,26 @@ def check_layout(apk):
 
 
 def align(source, dest):
-    command = ["zipalign", "-P", "16", "-f", "4", str(source), str(dest)]
-    result = subprocess.run(command, capture_output=True, text=True)
+    zipalign = engines.resolve_executable("zipalign")
+    command = [zipalign, "-P", "16", "-f", "4", str(source), str(dest)]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True)
+    except FileNotFoundError as error:
+        raise ValueError(
+            "zipalign executable not found on PATH; install Android SDK build-tools and add it to PATH."
+        ) from error
     if result.returncode:
-        message = result.stderr + result.stdout
+        message = (result.stderr or result.stdout or "").strip()
         if not re.search(r"(unknown|invalid|unrecognized|illegal) option", message, re.I):
-            raise ValueError("zipalign failed: " + message)
-        subprocess.run(
-            ["zipalign", "-p", "-f", "4", str(source), str(dest)],
-            check=True, capture_output=True, text=True,
-        )
+            raise ValueError("zipalign failed: " + (message or f"exit {result.returncode}"))
+        try:
+            subprocess.run(
+                [zipalign, "-p", "-f", "4", str(source), str(dest)],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout or "").strip()
+            raise ValueError("zipalign failed: " + (detail or f"exit {error.returncode}")) from error
     check_layout(dest)
 
 
@@ -100,14 +160,29 @@ def finalize(source, work, dest, *, credentials=None, unsigned=False):
     if credentials is None:
         raise ValueError("Signing credentials are required unless unsigned=True")
     key, alias, env = credentials
-    subprocess.run(["apksigner", "sign", "--ks", str(key), "--ks-key-alias", alias,
-                    "--ks-pass", "env:KS_SECRET", "--key-pass", "env:KS_SECRET",
-                    "--out", str(dest), str(aligned)],
-                   check=True, env=env, capture_output=True, text=True)
-    subprocess.run(
-        ["apksigner", "verify", "--verbose", str(dest)],
-        check=True, capture_output=True, text=True,
-    )
+    apksigner = engines.resolve_executable("apksigner")
+    for subcmd, argv in (
+        (
+            "sign",
+            [apksigner, "sign", "--ks", str(key), "--ks-key-alias", alias,
+             "--ks-pass", "env:KS_SECRET", "--key-pass", "env:KS_SECRET",
+             "--out", str(dest), str(aligned)],
+        ),
+        ("verify", [apksigner, "verify", "--verbose", str(dest)]),
+    ):
+        try:
+            subprocess.run(
+                argv, check=True, env=env if subcmd == "sign" else None, capture_output=True, text=True
+            )
+        except FileNotFoundError as error:
+            raise ValueError(
+                "apksigner executable not found on PATH; install Android SDK build-tools and add it to PATH."
+            ) from error
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout or "").strip()[:1500]
+            raise ValueError(
+                f"apksigner {subcmd} failed (exit {error.returncode}): {detail or 'no diagnostic output'}"
+            ) from error
     check_layout(dest)
     return dest
 

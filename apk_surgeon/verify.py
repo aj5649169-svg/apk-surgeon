@@ -4,23 +4,31 @@ import struct
 import subprocess
 import zipfile
 
+from . import engines
 from .signing import check_layout
 
 
 def verify(parts):
+    apksigner = engines.resolve_executable("apksigner")
     results = []
     for part in parts:
         row = {"apk": part.name, "errors": [], "certificates_sha256": [], "schemes": {}}
         sidecar = part.with_suffix(".apk.idsig")
         flags = ["--v4-signature-file", str(sidecar)] if sidecar.is_file() else []
-        result = subprocess.run(["apksigner", "verify", "--verbose", "--print-certs", *flags, str(part)],
-                                capture_output=True, text=True)
+        try:
+            result = subprocess.run([apksigner, "verify", "--verbose", "--print-certs", *flags, str(part)],
+                                    capture_output=True, text=True)
+        except FileNotFoundError as error:
+            raise ValueError(
+                "apksigner executable not found on PATH; install Android SDK build-tools and add it to PATH."
+            ) from error
         for scheme, value in re.findall(r"Verified using (v[\d.]+) scheme[^:\n]*:\s*(true|false)", result.stdout):
             row["schemes"][scheme] = value == "true"
         for scheme in ("v1", "v2", "v3", "v4"):
             row["schemes"].setdefault(scheme, None)
         if result.returncode:
-            row["errors"].append((result.stderr or result.stdout or "Signature verification failed").strip()[:1000])
+            detail = "\n".join(text for text in (result.stderr.strip(), result.stdout.strip()) if text)
+            row["errors"].append((detail or f"apksigner verify exited with code {result.returncode}")[:1200])
         else:
             row["certificates_sha256"] = sorted(re.findall(
                 r"^Signer #\d+ certificate SHA-256 digest:\s*([a-fA-F0-9]{64})\s*$", result.stdout, re.M))

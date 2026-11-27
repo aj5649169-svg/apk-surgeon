@@ -90,6 +90,14 @@
         </div>
       </section>
 
+      <div id="error-banner" class="alert alert-danger error-banner" role="alert" hidden>
+        <div class="error-banner-body">
+          <strong id="error-banner-title">Operation Failed</strong>
+          <pre id="error-banner-detail" class="error-banner-detail"></pre>
+        </div>
+        <button id="btn-dismiss-error" type="button" class="btn btn-ghost btn-sm">Dismiss</button>
+      </div>
+
       <!-- TAB: INSPECT -->
       <section id="tab-inspect" class="tab-panel">
         <div class="panel-head">
@@ -460,6 +468,7 @@
         </details>
         <div id="verify-box" class="card" hidden>
           <h3>Verification Matrix</h3>
+          <div id="verify-alert" class="alert alert-danger" hidden></div>
           <div id="verify-results" class="stack-sm"></div>
         </div>
       </section>

@@ -386,6 +386,25 @@ td { font-family: var(--mono); font-size: 12px; }
 
 .alert { padding: 10px 12px; border-radius: 8px; font-size: 12.5px; border: 1px solid var(--border); }
 .alert-warn { background: var(--amber-soft); border-color: rgba(245, 158, 11, 0.35); color: #fde68a; }
+.alert-danger { background: var(--rose-soft); border-color: rgba(244, 63, 94, 0.45); color: #fecdd3; }
+.error-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.error-banner-body { flex: 1; min-width: 0; }
+.error-banner-body strong { display: block; font-size: 13px; color: #ffe4e6; margin-bottom: 4px; }
+.error-banner-detail {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #fecdd3;
+  max-height: 200px;
+  overflow-y: auto;
+}
 .empty-state {
   padding: 28px 18px;
   text-align: center;
@@ -397,6 +416,7 @@ td { font-family: var(--mono); font-size: 12px; }
 /* Console, Diff, File Viewer */
 .progress-track { height: 5px; background: var(--bg-input); border-radius: 999px; overflow: hidden; margin-bottom: 10px; }
 .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--emerald), var(--cyan)); transition: width 180ms; }
+.progress-fill.is-error { background: linear-gradient(90deg, var(--rose), #fb7185); }
 
 .log-stream {
   background: var(--bg-input);
@@ -414,6 +434,7 @@ td { font-family: var(--mono); font-size: 12px; }
 
 .log-line { white-space: pre-wrap; word-break: break-word; color: #cbd5e1; }
 .log-err { color: var(--rose); }
+.log-warn { color: var(--amber); }
 
 .diff-view, .viewer-body {
   background: var(--bg-input);
@@ -441,6 +462,9 @@ td { font-family: var(--mono); font-size: 12px; }
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.history-item { cursor: pointer; transition: border-color 120ms, background 120ms; }
+.history-item:hover { border-color: var(--border-strong); background: rgba(255, 255, 255, 0.03); }
+.history-item.is-selected { border-color: var(--cyan); }
 
 .browser-grid { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 10px; }
 .file-list { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
@@ -513,8 +537,10 @@ td { font-family: var(--mono); font-size: 12px; }
   border: 1px solid var(--emerald);
   color: var(--text);
   font-size: 12.5px;
+  max-width: min(460px, 90vw);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
+.toast.toast-error { border-color: var(--rose); color: #ffe4e6; }
 
 summary { cursor: pointer; font-size: 12.5px; color: var(--text-muted); }
 

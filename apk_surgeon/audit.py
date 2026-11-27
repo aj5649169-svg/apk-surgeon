@@ -13,7 +13,7 @@ from pathlib import Path
 from lxml import etree
 
 from . import layout
-from .scanner import ANDROID, parse_manifest
+from .scanner import ANDROID, ensure_android_namespace, parse_manifest
 
 CONFIG_NAME = "apk_surgeon_network_security_config.xml"
 CONFIG_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
@@ -82,10 +82,11 @@ def trust_user_ca(root, *, manifest_text=None):
         raise ValueError("Manifest DTD is unsupported")
     config = config_path(root)
     config.parent.mkdir(parents=True, exist_ok=True)
-    application = tree.getroot().find("application")
+    root_el = ensure_android_namespace(tree.getroot())
+    application = root_el.find("application")
     if application is None:
         raise ValueError("Manifest has no <application> element")
-    package = tree.getroot().get("package", "")
+    package = root_el.get("package", "")
     reference = f"@xml/{Path(CONFIG_NAME).stem}"
     existing = application.get(ANDROID + "networkSecurityConfig")
     if existing:
@@ -103,7 +104,7 @@ def trust_user_ca(root, *, manifest_text=None):
             )
         return {target: merge_config(target.read_text(encoding="utf-8"))}, package
     application.set(ANDROID + "networkSecurityConfig", reference)
-    changes = {manifest: etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"}
+    changes = {manifest: etree.tostring(root_el, encoding="UTF-8", xml_declaration=True).decode() + "\n"}
     changes[config] = CONFIG_TEMPLATE
     return changes, package
 

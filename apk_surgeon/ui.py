@@ -8,6 +8,7 @@ import mimetypes
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from lxml.etree import XMLSyntaxError
 
@@ -66,12 +67,15 @@ def doctor_info(apkeditor_jar=None):
         warning = None
         if resolved and name == "apktool":
             try:
-                version = subprocess.check_output(["apktool", "--version"], text=True, timeout=10).strip()
+                version = subprocess.check_output(
+                    [resolved, "--version"], stderr=subprocess.STDOUT, text=True, timeout=10
+                ).strip()
                 match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
                 if not match or tuple(map(int, match.groups())) < (3, 0, 3):
                     warning = "Upgrade Apktool to 3.0.3 or newer (CVE-2026-39973 affects 3.0.0/3.0.1)."
-            except (OSError, subprocess.SubprocessError):
+            except (OSError, subprocess.SubprocessError) as error:
                 version = "unknown"
+                warning = f"apktool failed health check: {error}"
         tools.append({"name": name, "present": bool(resolved), "path": resolved, "version": version, "warning": warning})
 
     apkeditor_error = None
@@ -301,11 +305,31 @@ class JobManager:
             "kind": kind,
             "size": size,
             "inline": path.suffix.lower() in INLINE_TEXT_SUFFIXES,
-            "url": f"/api/jobs/{job['id']}/artifacts/{artifact_id}",
+            "url": f"/api/jobs/{job['id']}/artifacts/{quote(artifact_id, safe='')}",
         }
         job["artifact_map"][artifact_id] = {"path": path, "meta": meta}
         job["artifacts"].append(meta)
         return meta
+
+    @staticmethod
+    def _format_job_error(error):
+        if isinstance(error, subprocess.CalledProcessError):
+            cmd_list = error.cmd if isinstance(error.cmd, (list, tuple)) else [str(error.cmd)]
+            tool = Path(str(cmd_list[0])).name if cmd_list else "subprocess"
+            parts = [
+                part.strip()
+                for part in (getattr(error, "stderr", None), getattr(error, "stdout", None), getattr(error, "output", None))
+                if isinstance(part, str) and part.strip()
+            ]
+            detail = "\n".join(parts)
+            if len(detail) > 1500:
+                detail = detail[-1500:]
+            return (
+                f"{tool} failed (exit {error.returncode}):\n{detail}"
+                if detail
+                else f"{tool} failed (exit {error.returncode})."
+            )
+        return str(error) or type(error).__name__
 
     def _run_job(self, job, payload):
         job["started_at"] = time.time()
@@ -319,17 +343,25 @@ class JobManager:
             job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
             with job["cond"]:
                 job["status"] = "done"
-            self._emit(job, step="Completed", progress=100, log="Job finished successfully.", event_type="done")
-        except (
-            OSError, ValueError, KeyError, XMLSyntaxError, zipfile.BadZipFile,
-            subprocess.CalledProcessError, engines.EngineError,
-        ) as error:
-            job["error"] = str(error)
+            done_step = (
+                "Verification FAIL"
+                if (job["type"] == "verify" and isinstance(result, dict) and not result.get("ok", True))
+                else "Completed"
+            )
+            done_log = (
+                "Verification finished with failures."
+                if done_step != "Completed"
+                else "Job finished successfully."
+            )
+            self._emit(job, step=done_step, progress=100, log=done_log, event_type="done")
+        except Exception as error:
+            msg = self._format_job_error(error)
+            job["error"] = msg
             job["finished_at"] = time.time()
             job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
             with job["cond"]:
                 job["status"] = "error"
-            self._emit(job, step="Failed", progress=100, log=f"Error: {error}", event_type="done")
+            self._emit(job, step="Failed", progress=100, log=f"Error: {msg}", event_type="done")
 
     def _dispatch(self, job, payload):
         jtype = job["type"]
@@ -342,7 +374,18 @@ class JobManager:
             self._emit(job, step="Verifying signatures & alignment", progress=40, log=f"Verifying {src.name}...")
             with tempfile.TemporaryDirectory() as tmp:
                 parts = unpack(src, Path(tmp))
-                return verify.verify(parts)
+                res = verify.verify(parts)
+            for row in res["apks"]:
+                label = "PASS" if not row["errors"] else "FAIL"
+                self._emit(job, log=f"{row['apk']}: {label} (aligned={row['aligned']})")
+                for err in row["errors"]:
+                    self._emit(job, log=f"Error: {row['apk']}: {err}")
+            job["summary"] = {
+                "verified_ok": res["ok"],
+                "apks": len(res["apks"]),
+                "failed": sum(1 for row in res["apks"] if row["errors"]),
+            }
+            return res
         if jtype == "decode":
             src = self.resolve_input(payload)
             out_dir = Path(payload["output"]).expanduser().resolve() if payload.get("output") else (
@@ -378,6 +421,9 @@ class JobManager:
                 ks_alias=payload.get("ks_alias") or None,
                 ks_pass=payload.get("ks_pass") or None,
             )
+            if not res.get("ok") and res.get("signed", True):
+                errs = [err for row in (res.get("verify") or {}).get("apks", []) for err in row.get("errors", [])]
+                raise ValueError("Built APK failed verification: " + ("; ".join(errs) or "unknown verification error"))
             if out_file.is_relative_to(job["dir"]):
                 self._register_artifact(job, out_file, "Built APK", kind="apk")
             job["summary"] = {"engine": res["engine"], "signed": res["signed"], "output_size": out_file.stat().st_size}
@@ -400,6 +446,9 @@ class JobManager:
                 ks_alias=payload.get("ks_alias") or None,
                 ks_pass=payload.get("ks_pass") or None,
             )
+            if not res.get("ok") and res.get("signed", True):
+                errs = [err for row in (res.get("verify") or {}).get("apks", []) for err in row.get("errors", [])]
+                raise ValueError("Merged APK failed verification: " + ("; ".join(errs) or "unknown verification error"))
             if out_file.is_relative_to(job["dir"]):
                 self._register_artifact(job, out_file, "Merged Standalone APK", kind="apk")
             for warn in res["warnings"]:
@@ -423,8 +472,14 @@ class JobManager:
                 ks_alias=payload.get("ks_alias") or None,
                 ks_pass=payload.get("ks_pass") or None,
             )
+            if not res.get("ok"):
+                errs = [err for row in (res.get("verify") or {}).get("apks", []) for err in row.get("errors", [])]
+                raise ValueError("Signed APK failed verification: " + ("; ".join(errs) or "unknown verification error"))
             if out_file.is_relative_to(job["dir"]):
                 self._register_artifact(job, out_file, "Signed APK", kind="apk")
+            certs = ((res.get("verify") or {}).get("apks") or [{}])[0].get("certificates_sha256", [])
+            if certs:
+                self._emit(job, log=f"Verified signature SHA-256: {certs[0]}")
             job["summary"] = {"input_size": src.stat().st_size, "output_size": out_file.stat().st_size}
             return res
         return self._run_scan_or_clean(job, payload, mode=jtype)
@@ -787,38 +842,47 @@ def _make_handler(manager, token, allowed_hosts_fn):
                     extra_headers={"Cache-Control": "no-store"},
                 )
                 return
-            if path == "/api/doctor":
-                self._send_json(HTTPStatus.OK, doctor_info(None))
-                return
-            if path == "/api/jobs":
-                self._send_json(HTTPStatus.OK, {"ok": True, "jobs": manager.list_jobs()})
-                return
-            if path == "/api/workspace-file":
-                self._handle_workspace_file(parse_qs(parsed.query))
-                return
-            match_events = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/events", path)
-            if match_events:
-                self._handle_sse(match_events.group(1))
-                return
-            match_files = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/files", path)
-            if match_files:
-                self._handle_job_files(match_files.group(1))
-                return
-            match_art = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/artifacts/([^/]+)", path)
-            if match_art:
-                qs = parse_qs(parsed.query)
-                self._handle_artifact(match_art.group(1), match_art.group(2), inline=qs.get("inline") == ["1"])
-                return
-            match_job = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)", path)
-            if match_job:
-                job = manager.get_job(match_job.group(1))
-                if not job:
-                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Job not found"})
+            try:
+                if path == "/api/doctor":
+                    self._send_json(HTTPStatus.OK, doctor_info(None))
                     return
-                with job["cond"]:
-                    self._send_json(HTTPStatus.OK, {"ok": True, "job": manager._serialize_job(job)})
-                return
-            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
+                if path == "/api/jobs":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "jobs": manager.list_jobs()})
+                    return
+                if path == "/api/workspace-file":
+                    self._handle_workspace_file(parse_qs(parsed.query))
+                    return
+                match_events = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/events", path)
+                if match_events:
+                    self._handle_sse(match_events.group(1))
+                    return
+                match_files = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/files", path)
+                if match_files:
+                    self._handle_job_files(match_files.group(1))
+                    return
+                match_art = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/artifacts/([^/]+)", path)
+                if match_art:
+                    qs = parse_qs(parsed.query)
+                    self._handle_artifact(match_art.group(1), match_art.group(2), inline=qs.get("inline") == ["1"])
+                    return
+                match_job = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)", path)
+                if match_job:
+                    job = manager.get_job(match_job.group(1))
+                    if not job:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Job not found"})
+                        return
+                    with job["cond"]:
+                        self._send_json(HTTPStatus.OK, {"ok": True, "job": manager._serialize_job(job)})
+                    return
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
+            except (ValueError, OSError, XMLSyntaxError, zipfile.BadZipFile, engines.EngineError,
+                    subprocess.SubprocessError, struct.error) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": manager._format_job_error(error)})
+            except Exception as error:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": f"Internal server error: {error}"},
+                )
 
         def _handle_workspace_file(self, query):
             job_id = (query.get("job_id") or [""])[0]
@@ -974,8 +1038,14 @@ def _make_handler(manager, token, allowed_hosts_fn):
                     self._send_json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
                     return
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
-            except (ValueError, OSError, XMLSyntaxError, zipfile.BadZipFile, engines.EngineError) as error:
-                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
+            except (ValueError, OSError, XMLSyntaxError, zipfile.BadZipFile, engines.EngineError,
+                    subprocess.SubprocessError, struct.error) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": manager._format_job_error(error)})
+            except Exception as error:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": f"Internal server error: {error}"},
+                )
 
         def do_PUT(self):
             self._check_origin_and_host() and self._check_csrf() and self._send_json(
@@ -1004,6 +1074,12 @@ def create_server(host="127.0.0.1", port=8765, *, workspace=None):
     class Server(ThreadingHTTPServer):
         daemon_threads = True
         allow_reuse_address = True
+
+        def handle_error(self, request, client_address):
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+                return
+            super().handle_error(request, client_address)
 
     bound_hosts = {host.lower()}
     if host in {"127.0.0.1", "localhost"}:

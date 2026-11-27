@@ -1,14 +1,18 @@
 """Unit tests for v0.5.0 raw APK toolkit, extractNativeLibs, and custom domains."""
 
 import json
+import os
 import struct
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from apk_surgeon import cli, engines, recipe, repack, signing, sinkhole, toolkit
+from apk_surgeon import bundles, cli, engines, recipe, repack, signing, sinkhole, toolkit, verify
 from apk_surgeon.scanner import ANDROID, parse_manifest
 
 
@@ -155,7 +159,7 @@ def test_sign_refuses_in_place_and_strips_metadata(tmp_path, monkeypatch, dex_by
 
     def fake_run(cmd, **kwargs):
         seen_kwargs.append(kwargs)
-        if cmd[:2] == ["apksigner", "sign"]:
+        if len(cmd) >= 2 and Path(cmd[0]).stem.lower() == "apksigner" and cmd[1] == "sign":
             out_path = cmd[cmd.index("--out") + 1]
             repack.repack(cmd[-1], out_path)
         return SimpleNamespace(returncode=0, stdout="Verified using v2 scheme: true\n", stderr="")
@@ -322,3 +326,100 @@ def test_allow_custom_domains_enables_custom_sinkhole_with_warning(tmp_path, mon
     assert "--allow-custom-domains" in report
     assert "metrics.custom-example.org" in report
     assert "Sinkholed URLs: 1" in report
+
+
+def test_windows_cmd_bat_executable_resolution_without_shell(tmp_path, monkeypatch, dex_bytes):
+    resolved_map = {
+        "apktool": r"C:\apk-tools\apktool.CMD",
+        "apksigner": r"C:\apk-tools\build-tools\35\apksigner.BAT",
+        "zipalign": r"C:\apk-tools\build-tools\35\zipalign.EXE",
+        "aapt2": r"C:\apk-tools\build-tools\35\aapt2.EXE",
+    }
+    monkeypatch.setattr(engines.shutil, "which", lambda name: resolved_map.get(str(name)))
+
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs.get("shell") is not True
+        recorded.append(list(cmd))
+        if Path(cmd[0]).name == "apksigner.BAT" and cmd[1] == "sign":
+            repack.repack(cmd[-1], cmd[cmd.index("--out") + 1])
+        return SimpleNamespace(
+            returncode=0,
+            stdout="Verified using v2 scheme: true\nSigner #1 certificate SHA-256 digest: " + ("ab" * 32) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(engines.subprocess, "run", fake_run)
+    monkeypatch.setattr(signing.subprocess, "run", fake_run)
+    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+
+    apk = _make_apk(tmp_path / "in.apk", {"classes.dex": (dex_bytes(["a"]), zipfile.ZIP_STORED)})
+    engines.decode_apktool(apk, tmp_path / "dec")
+    engines.rebuild_apktool(tmp_path / "dec", tmp_path / "out.apk")
+
+    monkeypatch.setattr(signing, "align", lambda s, d: repack.repack(s, d))
+    monkeypatch.setattr(signing, "check_layout", lambda p: None)
+    monkeypatch.setattr(signing, "resolve_identity", lambda **k: (tmp_path / "k.jks", "surgeon", {}))
+    toolkit.sign_apk(apk, tmp_path / "signed.apk")
+
+    assert recorded[0][0] == resolved_map["apktool"]
+    assert recorded[1][0] == resolved_map["apktool"]
+    assert any(cmd[0] == resolved_map["apksigner"] and cmd[1] == "sign" for cmd in recorded)
+    assert any(cmd[0] == resolved_map["apksigner"] and cmd[1] == "verify" for cmd in recorded)
+
+    bundle = _make_apk(tmp_path / "split.xapk", {"base.apk": (apk.read_bytes(), zipfile.ZIP_STORED)})
+    with pytest.raises(ValueError, match="Merge Splits"):
+        toolkit.sign_apk(bundle, tmp_path / "bad.apk")
+
+    monkeypatch.setattr(
+        bundles.subprocess, "check_output",
+        lambda cmd, **kw: recorded.append(list(cmd)) or "package: name='org.ex' versionCode='1'\n",
+    )
+    unpack_dir = tmp_path / "unpack"
+    unpack_dir.mkdir()
+    assert len(bundles.unpack(bundle, unpack_dir)) == 1
+    assert recorded[-1][0] == resolved_map["aapt2"]
+
+
+def test_resolve_identity_stale_lock_recovery_and_concurrency(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    key_dir = tmp_path / ".apk-surgeon"
+    key_dir.mkdir()
+    stale = key_dir / "creating-key.lock"
+    stale.write_bytes(b"")
+    old = time.time() - 10.0
+    os.utime(stale, (old, old))
+
+    monkeypatch.setattr(engines.shutil, "which", lambda n: str(tmp_path / f"{n}.EXE"))
+    created_calls = []
+
+    def fake_keytool(cmd, **kwargs):
+        created_calls.append(cmd)
+        ks = Path(cmd[cmd.index("-keystore") + 1])
+        ks.write_bytes(b"fake-jks")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(signing.subprocess, "run", fake_keytool)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outcomes = list(pool.map(lambda _: signing.resolve_identity(), range(4)))
+
+    assert len(created_calls) == 1
+    assert len({row[0] for row in outcomes}) == 1
+    assert len({row[2]["KS_SECRET"] for row in outcomes}) == 1
+    assert not stale.exists()
+    assert (key_dir / "keystore.jks").is_file()
+
+
+def test_normalize_manifest_extract_native_libs_adds_xmlns_android(tmp_path):
+    manifest = tmp_path / "AndroidManifest.xml"
+    manifest.write_text('<manifest package="org.example.bare"><application/></manifest>', encoding="utf-8")
+    changed = toolkit.normalize_manifest_extract_native_libs(
+        manifest, has_native_libs=True, stored_and_aligned_16k=True
+    )
+    assert changed is True
+    text = manifest.read_text(encoding="utf-8")
+    assert 'xmlns:android="http://schemas.android.com/apk/res/android"' in text
+    assert 'android:extractNativeLibs="false"' in text
+    assert "ns0" not in text

@@ -120,8 +120,8 @@ def normalize_manifest_extract_native_libs(manifest_path, *, has_native_libs, st
     from lxml import etree
 
     manifest_path = Path(manifest_path)
-    tree = scanner.parse_manifest(manifest_path)
-    application = tree.getroot().find("application")
+    root = scanner.ensure_android_namespace(scanner.parse_manifest(manifest_path).getroot())
+    application = root.find("application")
     if application is None:
         return False
     key = scanner.ANDROID + "extractNativeLibs"
@@ -141,7 +141,7 @@ def normalize_manifest_extract_native_libs(manifest_path, *, has_native_libs, st
             return False
         application.set(key, desired)
     manifest_path.write_text(
-        etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n", encoding="utf-8"
+        etree.tostring(root, encoding="UTF-8", xml_declaration=True).decode() + "\n", encoding="utf-8"
     )
     return True
 
@@ -380,6 +380,10 @@ def build_apk(
 def sign_apk(apk, output, *, force=False, keystore=None, ks_alias=None, ks_pass=None):
     """Strip stale signatures, enforce ZIP_STORED + 16 KiB alignment, sign and verify."""
     apk = Path(apk).resolve(strict=True)
+    if apk.suffix.lower() in {".xapk", ".apkm", ".apks"}:
+        raise ValueError(
+            f"sign requires a standalone .apk file, got {apk.suffix}; use Merge Splits first for split bundles."
+        )
     out = _check_output_file(output, input_path=apk, force=force)
     if not zipfile.is_zipfile(apk):
         raise ValueError(f"Expected a valid APK zip archive: {apk}")
@@ -465,10 +469,11 @@ def merge_bundle(
 
 
 def _parse_badging(apk):
-    if not shutil.which("aapt2"):
+    aapt2 = shutil.which("aapt2")
+    if not aapt2:
         return None
     try:
-        result = subprocess.run(["aapt2", "dump", "badging", str(apk)], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([aapt2, "dump", "badging", str(apk)], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode:
@@ -580,10 +585,11 @@ def inspect_apk(apk):
         if not extracted:
             raise ValueError("Bundle archive contains no .apk entries")
         base = extracted[0]
-        if shutil.which("aapt2"):
+        aapt2 = shutil.which("aapt2")
+        if aapt2:
             for candidate in extracted:
                 dump = subprocess.run(
-                    ["aapt2", "dump", "badging", str(candidate)], capture_output=True, text=True, timeout=30
+                    [aapt2, "dump", "badging", str(candidate)], capture_output=True, text=True, timeout=30
                 )
                 if dump.returncode == 0 and "package:" in dump.stdout and "split='" not in dump.stdout:
                     base = candidate
