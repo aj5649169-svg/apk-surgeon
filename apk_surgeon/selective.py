@@ -34,16 +34,12 @@ def dex_candidates(apk, needles):
 
 def _trimmed(source, dest, keep):
     """Copy ``source`` to ``dest`` keeping only one classes*.dex."""
-    with zipfile.ZipFile(source) as src, zipfile.ZipFile(dest, "w") as out:
-        for item in src.infolist():
-            if DEX_NAME.fullmatch(item.filename) and item.filename != keep:
-                continue
-            if repack.is_stale_metadata(item.filename):
-                continue
-            entry = item
-            with src.open(item) as inp, out.open(entry, "w") as target:
-                shutil.copyfileobj(inp, target)
-    return dest
+    return repack.repack(
+        source,
+        dest,
+        strip_metadata=True,
+        exclude=lambda name: bool(DEX_NAME.fullmatch(name)) and name != keep,
+    )
 
 
 def _single_smali_root(root):

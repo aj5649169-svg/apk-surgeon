@@ -13,109 +13,39 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from . import bundles, dex_scanner, engines, frameworks, layout, repack, scanner, signing, verify
+from . import binary, bundles, dex_scanner, engines, frameworks, layout, repack, scanner, signing, verify
 
-RES_XML_TYPE = 0x0003
-RES_STRING_POOL_TYPE = 0x0001
-RES_XML_START_ELEMENT_TYPE = 0x0102
-RES_XML_RESOURCE_MAP_TYPE = 0x0180
-ATTR_EXTRACT_NATIVE_LIBS = 0x010104EA
-TYPE_STRING = 0x03
-TYPE_INT_DEC = 0x10
-TYPE_INT_HEX = 0x11
-TYPE_INT_BOOLEAN = 0x12
-
-
-def _decode_axml_string_pool(data, start, header_size, size):
-    if size < 28 or header_size > size or start + size > len(data):
-        return []
-    string_count, _, flags, strings_start, _ = struct.unpack_from("<5I", data, start + 8)
-    is_utf8 = bool(flags & 0x100)
-    offsets_pos = start + header_size
-    pool_base = start + strings_start
-    end_limit = start + size
-    if offsets_pos + 4 * string_count > end_limit or pool_base > end_limit:
-        return []
-    out = []
-    for index in range(string_count):
-        rel = struct.unpack_from("<I", data, offsets_pos + 4 * index)[0]
-        pos = pool_base + rel
-        if pos >= end_limit:
-            out.append("")
-            continue
-        if is_utf8:
-            val = data[pos]
-            pos += 2 if (val & 0x80 and pos + 1 < end_limit) else 1
-            if pos >= end_limit:
-                out.append("")
-                continue
-            byte_len = data[pos]
-            if byte_len & 0x80 and pos + 1 < end_limit:
-                byte_len = ((byte_len & 0x7F) << 8) | data[pos + 1]
-                pos += 2
-            else:
-                pos += 1
-            out.append(data[pos:min(pos + byte_len, end_limit)].decode("utf-8", errors="replace"))
-        else:
-            if pos + 2 > end_limit:
-                out.append("")
-                continue
-            u16_len = struct.unpack_from("<H", data, pos)[0]
-            if u16_len & 0x8000 and pos + 4 <= end_limit:
-                low = struct.unpack_from("<H", data, pos + 2)[0]
-                u16_len = ((u16_len & 0x7FFF) << 16) | low
-                pos += 4
-            else:
-                pos += 2
-            raw = data[pos:min(pos + u16_len * 2, end_limit)]
-            out.append(raw.decode("utf-16-le", errors="replace"))
-    return out
+_decode_axml_string_pool = binary.decode_axml_string_pool
 
 
 def read_axml_extract_native_libs(data):
     """Return True/False if compiled AndroidManifest sets extractNativeLibs, else None."""
-    if len(data) < 8:
-        return None
-    root_type, root_hdr, root_size = struct.unpack_from("<HHI", data, 0)
-    if root_type != RES_XML_TYPE or root_hdr < 8 or root_size > len(data):
-        return None
-    pool = []
-    res_ids = []
-    cursor = root_hdr
-    while cursor + 8 <= root_size:
-        ctype, chdr, csize = struct.unpack_from("<HHI", data, cursor)
-        if chdr < 8 or csize < chdr or cursor + csize > root_size:
-            break
-        if ctype == RES_STRING_POOL_TYPE:
-            pool = _decode_axml_string_pool(data, cursor, chdr, csize)
-        elif ctype == RES_XML_RESOURCE_MAP_TYPE:
-            count = (csize - chdr) // 4
-            res_ids = list(struct.unpack_from(f"<{count}I", data, cursor + chdr))
-        elif ctype == RES_XML_START_ELEMENT_TYPE and cursor + chdr + 20 <= cursor + csize:
-            _, name_idx, attr_start, attr_size, attr_count = struct.unpack_from("<iiHHH", data, cursor + chdr)
-            tag = pool[name_idx] if 0 <= name_idx < len(pool) else ""
-            if tag == "application" and attr_size >= 20:
-                attr_pos = cursor + chdr + attr_start
-                for index in range(attr_count):
-                    entry = attr_pos + index * attr_size
-                    if entry + 20 > cursor + csize:
-                        break
-                    _, a_name, _, _, _, dtype, val = struct.unpack_from("<iiiHBBI", data, entry)
-                    by_id = 0 <= a_name < len(res_ids) and res_ids[a_name] == ATTR_EXTRACT_NATIVE_LIBS
-                    by_name = 0 <= a_name < len(pool) and pool[a_name] == "extractNativeLibs"
-                    if not (by_id or by_name):
-                        continue
-                    if dtype in (TYPE_INT_BOOLEAN, TYPE_INT_DEC, TYPE_INT_HEX):
-                        return bool(val != 0)
-                    if dtype == TYPE_STRING and 0 <= val < len(pool):
-                        text = pool[val].strip().lower()
-                        if text in ("true", "false"):
-                            return text == "true"
-        cursor += csize
-    return None
+    return binary.read_axml_manifest(data)["extract_native_libs"]
 
 
-def normalize_manifest_extract_native_libs(manifest_path, *, has_native_libs, stored_and_aligned_16k):
+def _strip_split_manifest_markers(root, application):
+    """Remove split-APK requirement attributes and Play Store metadata after merge."""
+    changed = False
+    for manifest_attr in ("requiredSplitTypes", "splitTypes"):
+        key = scanner.ANDROID + manifest_attr
+        if key in root.attrib:
+            del root.attrib[key]
+            changed = True
+    split_req_key = scanner.ANDROID + "isSplitRequired"
+    if split_req_key in application.attrib:
+        del application.attrib[split_req_key]
+        changed = True
+    name_key = scanner.ANDROID + "name"
+    for meta in list(application.findall("meta-data")):
+        if meta.get(name_key) in ("com.android.vending.splits", "com.android.vending.splits.required"):
+            application.remove(meta)
+            changed = True
+    return changed
+
+
+def normalize_manifest_extract_native_libs(
+    manifest_path, *, has_native_libs, stored_and_aligned_16k, clean_splits=False
+):
     """Set extractNativeLibs='false' only when libs are stored & 16 KiB aligned; else normalize/remove."""
     from lxml import etree
 
@@ -124,6 +54,7 @@ def normalize_manifest_extract_native_libs(manifest_path, *, has_native_libs, st
     application = root.find("application")
     if application is None:
         return False
+    changed = False
     key = scanner.ANDROID + "extractNativeLibs"
     if has_native_libs and stored_and_aligned_16k:
         desired = "false"
@@ -133,13 +64,16 @@ def normalize_manifest_extract_native_libs(manifest_path, *, has_native_libs, st
         desired = None
     current = application.get(key)
     if desired is None:
-        if key not in application.attrib:
-            return False
-        del application.attrib[key]
-    else:
-        if current == desired:
-            return False
+        if key in application.attrib:
+            del application.attrib[key]
+            changed = True
+    elif current != desired:
         application.set(key, desired)
+        changed = True
+    if clean_splits:
+        changed = _strip_split_manifest_markers(root, application) or changed
+    if not changed:
+        return False
     manifest_path.write_text(
         etree.tostring(root, encoding="UTF-8", xml_declaration=True).decode() + "\n", encoding="utf-8"
     )
@@ -170,6 +104,7 @@ def normalize_merged_extract_native_libs(apk, work, *, apkeditor=None, notes=Non
     notes = notes if notes is not None else []
     if not apk.is_file() or not zipfile.is_zipfile(apk):
         return apk
+    work.mkdir(parents=True, exist_ok=True)
     staged = work / "norm-staged.apk"
     probed = work / "norm-probed.apk"
     repack.repack(apk, staged, strip_metadata=True)
@@ -185,13 +120,19 @@ def normalize_merged_extract_native_libs(apk, work, *, apkeditor=None, notes=Non
     with zipfile.ZipFile(candidate) as archive:
         if "AndroidManifest.xml" not in archive.namelist():
             return candidate
-        current = read_axml_extract_native_libs(archive.read("AndroidManifest.xml"))
-    if current == desired:
+        manifest_info = binary.read_axml_manifest(archive.read("AndroidManifest.xml"))
+    needs_enl = manifest_info["extract_native_libs"] != desired
+    needs_splits = bool(
+        manifest_info["is_split_required"]
+        or manifest_info["required_split_types"]
+        or manifest_info["has_vending_splits"]
+    )
+    if not needs_enl and not needs_splits:
         label = "false" if desired is False else ("true" if desired is True else "absent")
         notes.append(f"extractNativeLibs already normalized ({label}).")
         return candidate
     if not apkeditor:
-        notes.append("Skipped extractNativeLibs manifest normalization: APKEditor jar unavailable.")
+        notes.append("Skipped extractNativeLibs/split manifest normalization: APKEditor jar unavailable.")
         return candidate
     dec_dir = work / "norm-decode"
     try:
@@ -206,7 +147,7 @@ def normalize_merged_extract_native_libs(apk, work, *, apkeditor=None, notes=Non
     if manifest_file is None:
         return candidate
     changed = normalize_manifest_extract_native_libs(
-        manifest_file, has_native_libs=has_libs, stored_and_aligned_16k=stored_and_16k
+        manifest_file, has_native_libs=has_libs, stored_and_aligned_16k=stored_and_16k, clean_splits=True
     )
     if not changed:
         return candidate
@@ -218,11 +159,14 @@ def normalize_merged_extract_native_libs(apk, work, *, apkeditor=None, notes=Non
         patched_manifest = archive.read("AndroidManifest.xml")
     normalized = work / "norm-final.apk"
     repack.repack(candidate, normalized, replace={"AndroidManifest.xml": patched_manifest})
-    notes.append(
-        "Normalized android:extractNativeLibs="
-        + ('"false"' if stored_and_16k else ('"true"' if has_libs else "<removed>"))
-        + " after split merge."
-    )
+    if needs_enl:
+        notes.append(
+            "Normalized android:extractNativeLibs="
+            + ('"false"' if stored_and_16k else ('"true"' if has_libs else "<removed>"))
+            + " after split merge."
+        )
+    if needs_splits:
+        notes.append("Cleared split-only manifest flags (isSplitRequired / vending.splits) after merge.")
     return normalized
 
 
@@ -502,6 +446,8 @@ def _inspect_single_apk_zip(apk):
     arsc_info = {"present": False, "stored": None, "compress_type": None}
     native_count = 0
     native_all_stored = True
+    elf_checked = 0
+    elf_unaligned = []
     extract_native_libs = None
     with zipfile.ZipFile(apk) as archive:
         info_map = {item.filename: item for item in archive.infolist()}
@@ -518,6 +464,15 @@ def _inspect_single_apk_zip(apk):
                 native_count += 1
                 if item.compress_type != zipfile.ZIP_STORED:
                     native_all_stored = False
+                parts = Path(item.filename).parts
+                abi = parts[1] if len(parts) >= 3 else ""
+                with archive.open(item) as stream:
+                    elf = binary.inspect_elf_alignment(stream)
+                if elf is not None:
+                    elf_checked += 1
+                    is_64 = elf["bits"] == 64 or abi in binary.ARCH_64_ABIS
+                    if is_64 and not elf["aligned_16k"]:
+                        elf_unaligned.append(item.filename)
         for name in dex_scanner.dex_entries(archive):
             try:
                 data = dex_scanner._read_dex(archive, name)
@@ -533,7 +488,13 @@ def _inspect_single_apk_zip(apk):
     return {
         "dex_files": dex_files,
         "resources_arsc": arsc_info,
-        "native_libs": {"count": native_count, "all_stored": native_all_stored if native_count else True},
+        "native_libs": {
+            "count": native_count,
+            "all_stored": native_all_stored if native_count else True,
+            "elf_checked": elf_checked,
+            "elf_16k_aligned": None if elf_checked == 0 else (not elf_unaligned),
+            "elf_unaligned": sorted(elf_unaligned),
+        },
         "extract_native_libs": extract_native_libs,
     }
 
@@ -597,6 +558,12 @@ def inspect_apk(apk):
         else:
             for candidate in extracted:
                 with zipfile.ZipFile(candidate) as sub:
+                    names = set(sub.namelist())
+                    if "AndroidManifest.xml" in names:
+                        minfo = binary.read_axml_manifest(sub.read("AndroidManifest.xml"))
+                        if minfo["valid"] and minfo["package"] and not minfo["split"]:
+                            base = candidate
+                            break
                     if dex_scanner.dex_entries(sub):
                         base = candidate
                         break
@@ -607,12 +574,24 @@ def inspect_apk(apk):
         abis = apk_abis(extracted)
         native_count = 0
         native_all_stored = True
+        elf_checked = 0
+        elf_unaligned = []
         for part in extracted:
             part_details = _inspect_single_apk_zip(part)
-            native_count += part_details["native_libs"]["count"]
-            if part_details["native_libs"]["count"] and not part_details["native_libs"]["all_stored"]:
+            nl = part_details["native_libs"]
+            native_count += nl["count"]
+            if nl["count"] and not nl["all_stored"]:
                 native_all_stored = False
-        details["native_libs"] = {"count": native_count, "all_stored": native_all_stored if native_count else True}
+            elf_checked += nl["elf_checked"]
+            elf_unaligned.extend(nl["elf_unaligned"])
+        dedup_unaligned = sorted(set(elf_unaligned))
+        details["native_libs"] = {
+            "count": native_count,
+            "all_stored": native_all_stored if native_count else True,
+            "elf_checked": elf_checked,
+            "elf_16k_aligned": None if elf_checked == 0 else (not dedup_unaligned),
+            "elf_unaligned": dedup_unaligned,
+        }
     return {
         "ok": True,
         "path": str(apk),

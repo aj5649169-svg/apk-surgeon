@@ -269,6 +269,8 @@ def execute(args):
             for row in result["apks"]:
                 console.print(row["apk"], "alignment:", row["aligned"], "signature schemes:", row["schemes"])
                 console.print("Signer SHA-256:", ", ".join(row["certificates_sha256"]) or "unavailable")
+                for warn in row.get("warnings", ()):
+                    console.print("Warning:", warn)
                 for error in row["errors"]:
                     console.print(error)
             console.print("PASS" if result["ok"] else "FAIL")

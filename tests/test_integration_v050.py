@@ -34,7 +34,7 @@ def cli(*args, check=True):
     return run("apk-surgeon", *args, check=check)
 
 
-def _build_fixture_apk(tmp_path, *, split=False, extract_native_libs=None, extra_members=None):
+def _build_fixture_apk(tmp_path, *, split=False, extract_native_libs=None, is_split_required=None, extra_members=None):
     source = tmp_path / "src"
     manifest = source / "AndroidManifest.xml"
     raw = source / "res/raw/note.txt"
@@ -42,10 +42,11 @@ def _build_fixture_apk(tmp_path, *, split=False, extract_native_libs=None, extra
     raw.write_text("payload")
     split_attr = f' split="{split}"' if split else ""
     enl_attr = f' android:extractNativeLibs="{extract_native_libs}"' if extract_native_libs is not None else ""
+    split_req_attr = f' android:isSplitRequired="{is_split_required}"' if is_split_required is not None else ""
     manifest.write_text(
         f'<manifest xmlns:android="{ANDROID[1:-1]}" package="org.example.toolkit"{split_attr} '
         'android:versionCode="1"><uses-sdk android:minSdkVersion="24"/>'
-        f'<application android:label="ToolkitFixture"{enl_attr}>'
+        f'<application android:label="ToolkitFixture"{enl_attr}{split_req_attr}>'
         '<activity android:name=".MainActivity"/>'
         '</application></manifest>'
     )
@@ -139,7 +140,7 @@ def test_sign_strips_stale_metadata_and_verifies(tmp_path, base_apk):
 def test_merge_normalizes_extract_native_libs_and_warns_multi_abi(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    base = _build_fixture_apk(tmp_path / "base", extract_native_libs="true")
+    base = _build_fixture_apk(tmp_path / "base", extract_native_libs="true", is_split_required="true")
     arm64 = _build_fixture_apk(
         tmp_path / "arm64", split="config.arm64_v8a",
         extra_members={"lib/arm64-v8a/libdemo.so": b"\x7fELF" + b"\x00" * 60},
@@ -163,9 +164,9 @@ def test_merge_normalizes_extract_native_libs_and_warns_multi_abi(tmp_path, monk
 
     decoded = tmp_path / "dec-merged"
     run("apktool", "d", merged_all, "-o", decoded)
-    assert parse_manifest(decoded / "AndroidManifest.xml").getroot().find("application").get(
-        ANDROID + "extractNativeLibs"
-    ) == "false"
+    app_el = parse_manifest(decoded / "AndroidManifest.xml").getroot().find("application")
+    assert app_el.get(ANDROID + "extractNativeLibs") == "false"
+    assert ANDROID + "isSplitRequired" not in app_el.attrib
 
     merged_one = tmp_path / "merged-arm64.apk"
     res_one = json.loads(cli("merge", bundle, "-o", merged_one, "--abi", "arm64-v8a", "--json").stdout)

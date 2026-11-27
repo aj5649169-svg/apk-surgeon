@@ -534,6 +534,8 @@ class JobManager:
             for row in res["apks"]:
                 label = "PASS" if not row["errors"] else "FAIL"
                 self._emit(job, log=f"{row['apk']}: {label} (aligned={row['aligned']})")
+                for warn in row.get("warnings", ()):
+                    self._emit(job, log=f"Warning: {row['apk']}: {warn}")
                 for err in row["errors"]:
                     self._emit(job, log=f"Error: {row['apk']}: {err}")
             job["summary"] = {
