@@ -89,8 +89,13 @@ def resource_failure(message):
     return bool(RESOURCE_ERROR.search(message or ""))
 
 
-def decode_apktool(apk, root, *, no_res=False):
-    argv = ["apktool", "d", *(["-r"] if no_res else []), str(apk), "-o", str(root)]
+def decode_apktool(apk, root, *, no_res=False, no_src=False):
+    argv = ["apktool", "d"]
+    if no_res:
+        argv.append("-r")
+    if no_src:
+        argv.append("-s")
+    argv.extend([str(apk), "-o", str(root)])
     run(argv, "Apktool decode")
     return DecodeResult("apktool", Path(root))
 

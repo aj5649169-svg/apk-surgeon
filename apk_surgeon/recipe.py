@@ -28,6 +28,8 @@ class Recipe:
     methods: dict = field(default_factory=dict)
     disable_components: list = field(default_factory=list)
     sinkhole_domains: list = field(default_factory=list)
+    custom_sinkhole_domains: list = field(default_factory=list)
+    allow_custom_domains: bool = False
 
     def signatures(self):
         return {signature for values in self.methods.values() for signature in values}
@@ -45,7 +47,7 @@ def _strings(source, value, key):
     return [item.strip() for item in value if item.strip()]
 
 
-def load(path):
+def load(path, *, allow_custom_domains=False):
     """Load and validate a recipe file."""
     path = Path(path)
     try:
@@ -96,5 +98,7 @@ def load(path):
             _fail(path, f"disable_components entry {component!r} is not a class name")
         recipe.disable_components.append(component)
     domains = _strings(path, raw.get("sinkhole_domains"), "sinkhole_domains")
-    recipe.sinkhole_domains = sinkhole.validate_recipe_domains(domains)
+    recipe.sinkhole_domains = sinkhole.validate_recipe_domains(domains, allow_custom=allow_custom_domains)
+    recipe.custom_sinkhole_domains = sinkhole.custom_domains(recipe.sinkhole_domains)
+    recipe.allow_custom_domains = bool(allow_custom_domains)
     return recipe
