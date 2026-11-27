@@ -410,6 +410,73 @@ def test_ui_doctor_error_propagation_verify_fail_and_percent_encoded_artifacts(
     # 5. Inline error banner markup & JS handlers exist cleanly without unsafe sinks
     assets = Path(__file__).resolve().parents[1] / "apk_surgeon/ui_assets"
     html_text = (assets / "index.html").read_text(encoding="utf-8")
+    css_text = (assets / "app.css").read_text(encoding="utf-8")
     js_text = (assets / "app.js").read_text(encoding="utf-8")
     assert 'id="error-banner"' in html_text and 'id="verify-alert"' in html_text
+    assert 'id="btn-cancel-job"' in html_text and ".is-cancelled" in css_text
     assert "function showError" in js_text and "function clearError" in js_text
+    assert "/cancel" in js_text
+    for asset_text in (html_text, js_text):
+        assert ".innerHTML" not in asset_text
+        assert "insertAdjacentHTML" not in asset_text
+        assert "eval(" not in asset_text
+        assert "new Function(" not in asset_text
+
+
+def test_ui_job_cancel_and_live_log_streaming(live_ui, tmp_path, monkeypatch, dex_bytes):
+    server, base, token = live_ui
+    apk = _make_apk(tmp_path / "cancel.apk", {"classes.dex": dex_bytes(["a"])})
+
+    # Unknown job returns 404, missing CSRF token returns 403.
+    st_no_tok, _, _ = _req(f"{base}/api/jobs/missing/cancel", method="POST", body=b"{}")
+    assert st_no_tok == 403
+    st_404, _, _ = _req(
+        f"{base}/api/jobs/missing/cancel",
+        method="POST",
+        body=b"{}",
+        headers={"X-APK-Surgeon-Token": token, "Content-Type": "application/json"},
+    )
+    assert st_404 == 404
+
+    started = threading.Event()
+    killed_pids = []
+    monkeypatch.setattr(engines, "terminate_process_tree", lambda pid: killed_pids.append(pid))
+
+    def fake_slow_sign(src, out, **kwargs):
+        hooks = engines._EXEC_HOOKS.get()
+        hooks["on_line"]("line 1 from tool\n")
+        hooks["on_pid"](987654, True)
+        started.set()
+        hooks["cancel_event"].wait(5)
+        engines.check_cancelled("sign")
+
+    monkeypatch.setattr(ui.toolkit, "sign_apk", fake_slow_sign)
+    st_s, _, body_s = _req(
+        f"{base}/api/jobs",
+        method="POST",
+        body=json.dumps({"type": "sign", "path": str(apk)}).encode("utf-8"),
+        headers={"X-APK-Surgeon-Token": token, "Content-Type": "application/json"},
+    )
+    assert st_s == 202
+    jid = json.loads(body_s)["job"]["id"]
+    assert started.wait(3)
+
+    st_c, _, cancel_body = _req(
+        f"{base}/api/jobs/{jid}/cancel",
+        method="POST",
+        body=b"{}",
+        headers={"X-APK-Surgeon-Token": token, "Content-Type": "application/json"},
+    )
+    assert st_c == 200 and json.loads(cancel_body)["ok"]
+
+    with urllib.request.urlopen(f"{base}/api/jobs/{jid}/events", timeout=5) as stream:
+        sse_text = stream.read().decode("utf-8")
+    assert "event: done" in sse_text
+    assert '"status": "cancelled"' in sse_text
+
+    _, _, fin = _req(f"{base}/api/jobs/{jid}")
+    job = json.loads(fin)["job"]
+    assert job["status"] == "cancelled"
+    assert job["step"] == "Cancelled"
+    assert 987654 in killed_pids
+    assert any("line 1 from tool" in entry["message"] for entry in job["logs"])

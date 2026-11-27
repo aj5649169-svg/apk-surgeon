@@ -408,14 +408,19 @@
     bar.style.width = `${job.progress || 0}%`;
     const isVerifyFail = job.type === "verify" && (job.result?.ok === false || job.summary?.verified_ok === false);
     bar.classList.toggle("is-error", job.status === "error" || isVerifyFail);
-    if (job.status === "done" || job.status === "error") {
+    bar.classList.toggle("is-cancelled", job.status === "cancelled");
+    const cancelBtn = document.getElementById("btn-cancel-job");
+    const active = job.status === "queued" || job.status === "running";
+    cancelBtn.hidden = !active;
+    if (active && job.id === state.activeJobId) cancelBtn.disabled = false;
+    if (job.status === "done" || job.status === "error" || job.status === "cancelled") {
       document.getElementById("job-timer").textContent = `${(job.elapsed_ms / 1000).toFixed(1)}s`;
     }
     const logBox = document.getElementById("job-logs");
     clear(logBox);
     for (const entry of job.logs || []) {
       const isErr = entry.message.startsWith("Error:");
-      const isWarn = entry.message.startsWith("Warning:");
+      const isWarn = entry.message.startsWith("Warning:") || entry.message.includes("cancelled");
       const cls = isErr ? "log-line log-err" : (isWarn ? "log-line log-warn" : "log-line");
       logBox.appendChild(el("div", { className: cls }, entry.message));
     }
@@ -474,6 +479,8 @@
       let badgeText = j.status;
       if (j.status === "error") {
         badgeCls = "badge-danger";
+      } else if (j.status === "cancelled") {
+        badgeCls = "badge-warn";
       } else if (j.type === "verify" && j.summary?.verified_ok === false) {
         badgeCls = "badge-danger";
         badgeText = "FAIL";
@@ -517,7 +524,7 @@
       state.activeEventSource = null;
     }
     clearInterval(state.timerHandle);
-    document.getElementById("job-progress").classList.remove("is-error");
+    document.getElementById("job-progress").classList.remove("is-error", "is-cancelled");
     state.jobStartMs = Date.now();
     state.timerHandle = setInterval(() => {
       document.getElementById("job-timer").textContent = `${((Date.now() - state.jobStartMs) / 1000).toFixed(1)}s`;
@@ -543,6 +550,8 @@
           if (type === "verify" && updated.result && !updated.result.ok) {
             showToast("Verification FAILED — review diagnostics below", "error");
           }
+        } else if (updated.status === "cancelled") {
+          showToast(`${type} cancelled`);
         } else if (updated.status === "error") {
           showError(`${type} failed`, updated.error || "Job failed");
         }
@@ -550,7 +559,7 @@
 
       const handleEvent = (ev) => {
         const updated = JSON.parse(ev.data);
-        if (updated.status === "done" || updated.status === "error") {
+        if (updated.status === "done" || updated.status === "error" || updated.status === "cancelled") {
           finishJob(updated);
         } else {
           renderJob(updated);
@@ -564,7 +573,7 @@
         state.activeEventSource = null;
         apiJson(`/api/jobs/${encodeURIComponent(job.id)}`)
           .then(({ job: latest }) => {
-            if (latest.status === "done" || latest.status === "error") {
+            if (latest.status === "done" || latest.status === "error" || latest.status === "cancelled") {
               finishJob(latest);
             } else {
               renderJob(latest);
@@ -573,10 +582,13 @@
             }
           })
           .catch((err) => {
+            clearInterval(state.timerHandle);
             showError(`${type} connection lost`, err.message, { logToConsole: true });
           });
       };
     }).catch((err) => {
+      clearInterval(state.timerHandle);
+      document.getElementById("btn-cancel-job").hidden = true;
       showError(`${type} could not start`, err.message, { logToConsole: true });
     });
   }
@@ -759,6 +771,20 @@
   });
 
   document.getElementById("btn-dismiss-error").addEventListener("click", clearError);
+  document.getElementById("btn-cancel-job").addEventListener("click", () => {
+    const jid = state.activeJobId;
+    if (!jid) return;
+    const btn = document.getElementById("btn-cancel-job");
+    btn.disabled = true;
+    apiJson(`/api/jobs/${encodeURIComponent(jid)}/cancel`, "POST", {})
+      .then((res) => {
+        if (res.job) renderJob(res.job);
+      })
+      .catch((err) => {
+        btn.disabled = false;
+        showError("Cancel failed", err.message, { logToConsole: true });
+      });
+  });
   document.getElementById("btn-quick-inspect").addEventListener("click", () => runQuickInspect());
   document.getElementById("btn-inspect-to-clean").addEventListener("click", () => switchTab("clean"));
   document.getElementById("btn-inspect-to-decode").addEventListener("click", () => switchTab("decode"));

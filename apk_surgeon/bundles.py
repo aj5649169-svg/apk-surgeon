@@ -27,14 +27,18 @@ def unpack(source, work):
             path = work/f"part-{len(parts)}.apk"
             with archive.open(entry) as src, path.open("wb") as dst:
                 shutil.copyfileobj(src,dst)
+            engines.check_cancelled("Split metadata inspection")
+            timeout = engines.effective_timeout()
             try:
                 dump = subprocess.check_output(
-                    [aapt2, "dump", "badging", str(path)], stderr=subprocess.STDOUT, text=True
+                    [aapt2, "dump", "badging", str(path)], stderr=subprocess.STDOUT, text=True, timeout=timeout
                 )
             except FileNotFoundError as error:
                 raise ValueError(
                     "aapt2 executable not found on PATH; install Android SDK build-tools and add it to PATH."
                 ) from error
+            except subprocess.TimeoutExpired as error:
+                raise ValueError(f"aapt2 timed out inspecting split {entry.filename} after {timeout:.0f}s.") from error
             except subprocess.CalledProcessError as error:
                 detail = (error.output or "").strip()[:400]
                 raise ValueError(f"aapt2 failed inspecting split {entry.filename}: {detail}") from error

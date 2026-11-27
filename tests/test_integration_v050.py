@@ -19,7 +19,11 @@ NEEDS_APKEDITOR = pytest.mark.skipif(
 
 
 def run(*args, check=True):
-    result = subprocess.run([str(arg) for arg in args], text=True, capture_output=True)
+    argv = [str(arg) for arg in args]
+    resolved = shutil.which(argv[0])
+    if resolved:
+        argv[0] = resolved
+    result = subprocess.run(argv, text=True, capture_output=True)
     if check and result.returncode:
         sys.stderr.write(result.stdout + "\n" + result.stderr)
         result.check_returncode()
@@ -75,6 +79,7 @@ def _build_fixture_apk(tmp_path, *, split=False, extract_native_libs=None, extra
 @pytest.fixture
 def base_apk(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     return _build_fixture_apk(tmp_path / "base", extra_members={"lib/arm64-v8a/libdemo.so": b"\x7fELF" + b"\x00" * 60})
 
 
@@ -133,6 +138,7 @@ def test_sign_strips_stale_metadata_and_verifies(tmp_path, base_apk):
 @NEEDS_APKEDITOR
 def test_merge_normalizes_extract_native_libs_and_warns_multi_abi(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     base = _build_fixture_apk(tmp_path / "base", extract_native_libs="true")
     arm64 = _build_fixture_apk(
         tmp_path / "arm64", split="config.arm64_v8a",

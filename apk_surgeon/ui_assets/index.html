@@ -482,7 +482,10 @@
             <h3>Live Job Console</h3>
             <span id="job-step" class="muted small">Idle</span>
           </div>
-          <span id="job-timer" class="mono-badge">0.0s</span>
+          <div class="btn-row">
+            <button id="btn-cancel-job" type="button" class="btn btn-danger btn-sm" hidden>Cancel</button>
+            <span id="job-timer" class="mono-badge">0.0s</span>
+          </div>
         </div>
         <div class="progress-track"><div id="job-progress" class="progress-fill"></div></div>
         <div id="job-logs" class="log-stream">No active job yet.</div>

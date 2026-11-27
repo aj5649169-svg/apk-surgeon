@@ -4,6 +4,7 @@ import re
 import urllib.request
 from urllib.parse import urlsplit
 
+from . import layout
 from .evidence import HAZARDS, endpoints
 from .scanner import METHOD
 
@@ -30,7 +31,10 @@ def analyze(root, url, model):
         req = urllib.request.Request(url.rstrip("/")+"/chat/completions",
             data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with opener.open(req, timeout=60) as response:
-            result = json.loads(json.loads(response.read(200000))["choices"][0]["message"]["content"])
+            content = json.loads(response.read(200000))["choices"][0]["message"]["content"].strip()
+        if content.startswith("```"):
+            content = re.sub(r"^```[a-zA-Z0-9_-]*\s*|\s*```$", "", content).strip()
+        result = json.loads(content)
         if (set(result) != {"method_name","reason","risk_level","safe_to_noop"} or result["method_name"] != method
             or result["risk_level"] not in ("low","medium","high") or not isinstance(result["safe_to_noop"], bool)
             or not isinstance(result["reason"], str)):
@@ -41,7 +45,7 @@ def analyze(root, url, model):
 def candidates(root):
     # Keep the first generic matches in reserve while looking for endpoint hits.
     preferred, generic = [], []
-    for path in sorted(root.glob("smali*/**/*.smali")):
+    for path in sorted(layout.smali_files(root)):
         for match in METHOD.finditer(path.read_text(encoding="utf-8")):
             body = match[2]
             if any(pattern.search(body) for _, pattern, _ in HAZARDS):

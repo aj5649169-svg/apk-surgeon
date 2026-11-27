@@ -6,7 +6,7 @@ from collections import defaultdict
 from lxml import etree
 
 from . import layout
-from .scanner import ANDROID, METHOD, RULES, components, parse_manifest
+from .scanner import ANDROID, METHOD, RULES, components, ensure_android_namespace, parse_manifest
 
 
 def patch_smali(text, signatures):
@@ -71,7 +71,8 @@ def plan(root, hits, strip_ad_permissions=False, disable_providers=False, *, man
                     permission.getparent().remove(permission)
                     changed = True
         if changed:
-            changes[path] = etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"
+            root_el = ensure_android_namespace(tree.getroot())
+            changes[path] = etree.tostring(root_el, encoding="UTF-8", xml_declaration=True).decode() + "\n"
     files = defaultdict(set)
     for hit in hits.values():
         for path, signature in hit.hooks:

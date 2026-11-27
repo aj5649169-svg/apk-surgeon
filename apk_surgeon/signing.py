@@ -66,6 +66,8 @@ def resolve_identity(*, keystore=None, ks_alias=None, ks_pass=None):
                         with tempfile.TemporaryDirectory(dir=directory) as tmp:
                             new = Path(tmp) / "key"
                             keytool = engines.resolve_executable("keytool")
+                            engines.check_cancelled("Keystore creation")
+                            timeout = engines.effective_timeout()
                             try:
                                 subprocess.run(
                                     [keytool, "-genkeypair", "-storetype", "JKS", "-keystore", str(new),
@@ -73,12 +75,14 @@ def resolve_identity(*, keystore=None, ks_alias=None, ks_pass=None):
                                      "-alias", alias, "-keyalg", "RSA", "-keysize", "3072",
                                      "-validity", "3650", "-dname", "CN=APK Surgeon Local"],
                                     env={**os.environ, "KS_SECRET": password},
-                                    check=True, capture_output=True, text=True,
+                                    check=True, capture_output=True, text=True, timeout=timeout,
                                 )
                             except FileNotFoundError as error:
                                 raise ValueError(
                                     f"Signing failed: 'keytool' executable not found on PATH ({error})."
                                 ) from error
+                            except subprocess.TimeoutExpired as error:
+                                raise ValueError(f"keytool timed out after {timeout:.0f}s.") from error
                             except subprocess.CalledProcessError as error:
                                 detail = (error.stderr or error.stdout or "").strip()
                                 raise ValueError(
@@ -122,14 +126,18 @@ def check_layout(apk):
 
 
 def align(source, dest):
+    engines.check_cancelled("APK alignment")
     zipalign = engines.resolve_executable("zipalign")
+    timeout = engines.effective_timeout()
     command = [zipalign, "-P", "16", "-f", "4", str(source), str(dest)]
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as error:
         raise ValueError(
             "zipalign executable not found on PATH; install Android SDK build-tools and add it to PATH."
         ) from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f"zipalign timed out after {timeout:.0f}s.") from error
     if result.returncode:
         message = (result.stderr or result.stdout or "").strip()
         if not re.search(r"(unknown|invalid|unrecognized|illegal) option", message, re.I):
@@ -137,8 +145,10 @@ def align(source, dest):
         try:
             subprocess.run(
                 [zipalign, "-p", "-f", "4", str(source), str(dest)],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, text=True, timeout=timeout,
             )
+        except subprocess.TimeoutExpired as error:
+            raise ValueError(f"zipalign timed out after {timeout:.0f}s.") from error
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or error.stdout or "").strip()
             raise ValueError("zipalign failed: " + (detail or f"exit {error.returncode}")) from error
@@ -161,6 +171,7 @@ def finalize(source, work, dest, *, credentials=None, unsigned=False):
         raise ValueError("Signing credentials are required unless unsigned=True")
     key, alias, env = credentials
     apksigner = engines.resolve_executable("apksigner")
+    timeout = engines.effective_timeout()
     for subcmd, argv in (
         (
             "sign",
@@ -170,14 +181,18 @@ def finalize(source, work, dest, *, credentials=None, unsigned=False):
         ),
         ("verify", [apksigner, "verify", "--verbose", str(dest)]),
     ):
+        engines.check_cancelled(f"apksigner {subcmd}")
         try:
             subprocess.run(
-                argv, check=True, env=env if subcmd == "sign" else None, capture_output=True, text=True
+                argv, check=True, env=env if subcmd == "sign" else None,
+                capture_output=True, text=True, timeout=timeout,
             )
         except FileNotFoundError as error:
             raise ValueError(
                 "apksigner executable not found on PATH; install Android SDK build-tools and add it to PATH."
             ) from error
+        except subprocess.TimeoutExpired as error:
+            raise ValueError(f"apksigner {subcmd} timed out after {timeout:.0f}s.") from error
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or error.stdout or "").strip()[:1500]
             raise ValueError(
