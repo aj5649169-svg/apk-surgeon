@@ -16,10 +16,22 @@ Install Python 3.10+, Java 17, Apktool 3.0.3+, and Android SDK Build Tools 35+
 ```sh
 pip install -e .
 apk-surgeon doctor
+apk-surgeon ui                 # launch local WebUI workbench in browser
 apk-surgeon inspect app.apk
 apk-surgeon scan app.apk
 apk-surgeon clean app.apk -o review/app-clean.apk
 ```
+
+## Local WebUI workbench (`apk-surgeon ui`)
+
+Launch the zero-dependency dark-mode workbench over localhost (`127.0.0.1:8765`) for interactive inspection, privacy auditing, unified diff preview, raw Apktool/APKEditor decode/build/merge/sign flows, live YAML recipe validation, and streaming SSE logs:
+
+```sh
+apk-surgeon ui
+apk-surgeon ui --port 9000 --no-browser
+```
+
+The server binds to `127.0.0.1` by default, enforces a per-session CSRF token plus `Host`/`Origin` validation, and invokes `apk_surgeon.toolkit` directly in Python.
 
 ## Raw APK toolkit (`decode`, `build`, `merge`, `sign`, `inspect`)
 

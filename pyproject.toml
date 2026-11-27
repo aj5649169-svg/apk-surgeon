@@ -19,7 +19,7 @@ test = ["pytest>=8"]
 apk-surgeon = "apk_surgeon.cli:main"
 
 [tool.setuptools.package-data]
-apk_surgeon = ["trackers.json"]
+apk_surgeon = ["trackers.json", "ui_assets/*"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

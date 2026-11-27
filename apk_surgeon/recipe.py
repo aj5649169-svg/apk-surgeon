@@ -47,58 +47,65 @@ def _strings(source, value, key):
     return [item.strip() for item in value if item.strip()]
 
 
-def load(path, *, allow_custom_domains=False):
-    """Load and validate a recipe file."""
-    path = Path(path)
+def loads(text, *, source="<inline>", allow_custom_domains=False):
+    """Parse and validate recipe YAML text."""
     try:
         import yaml
     except ImportError as error:  # pragma: no cover - dependency is declared
         raise ValueError("YAML recipes need PyYAML. Install apk-surgeon with its declared dependencies.") from error
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError as error:
-        raise ValueError(f"Recipe {path}: cannot read file ({error})") from error
+        raw = yaml.safe_load(text)
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-        raise ValueError(f"Recipe {path}: invalid YAML{where}: {getattr(error, 'problem', error)}") from error
+        raise ValueError(f"Recipe {source}: invalid YAML{where}: {getattr(error, 'problem', error)}") from error
     if raw is None:
-        _fail(path, "file is empty")
+        _fail(source, "file is empty")
     if not isinstance(raw, dict):
-        _fail(path, TOP_LEVEL_ERROR)
+        _fail(source, TOP_LEVEL_ERROR)
     unknown = sorted(set(raw) - ALLOWED)
     if unknown:
-        _fail(path, "unknown field(s): " + ", ".join(unknown) + ". " + TOP_LEVEL_ERROR)
-    recipe = Recipe(path=path)
+        _fail(source, "unknown field(s): " + ", ".join(unknown) + ". " + TOP_LEVEL_ERROR)
+    recipe = Recipe(path=Path(source) if source != "<inline>" else None)
     version = raw.get("version")
     if version is not None and version != 1:
-        _fail(path, f"unsupported version {version!r} (expected 1)")
-    for prefix in _strings(path, raw.get("package_prefixes"), "package_prefixes"):
+        _fail(source, f"unsupported version {version!r} (expected 1)")
+    for prefix in _strings(source, raw.get("package_prefixes"), "package_prefixes"):
         if not PACKAGE.match(prefix):
-            _fail(path, f"package_prefixes entry {prefix!r} is not a dotted Java package")
+            _fail(source, f"package_prefixes entry {prefix!r} is not a dotted Java package")
         recipe.package_prefixes.append(prefix)
     for entry in raw.get("methods") or []:
         if isinstance(entry, str):
             if not DESCRIPTOR.search(entry) or not SIGNATURE.search(entry):
-                _fail(path, f"methods entry {entry!r} must be a full 'Lpkg/Class;->name(args)Ret' signature")
+                _fail(source, f"methods entry {entry!r} must be a full 'Lpkg/Class;->name(args)Ret' signature")
             descriptor = DESCRIPTOR.search(entry).group(0)
             signature = entry.split("->", 1)[1] if "->" in entry else entry
             recipe.methods.setdefault(descriptor, set()).add(signature)
             continue
         if not isinstance(entry, dict) or set(entry) != {"class", "method"}:
-            _fail(path, "methods entries must be strings or {class, method} mappings")
+            _fail(source, "methods entries must be strings or {class, method} mappings")
         descriptor, signature = str(entry["class"]), str(entry["method"])
         if not DESCRIPTOR.fullmatch(descriptor):
-            _fail(path, f"methods class {descriptor!r} must be a smali descriptor like Lcom/example/Track;")
+            _fail(source, f"methods class {descriptor!r} must be a smali descriptor like Lcom/example/Track;")
         if not SIGNATURE.fullmatch(signature):
-            _fail(path, f"methods signature {signature!r} is not a concrete Dalvik signature")
+            _fail(source, f"methods signature {signature!r} is not a concrete Dalvik signature")
         recipe.methods.setdefault(descriptor, set()).add(signature)
-    for component in _strings(path, raw.get("disable_components"), "disable_components"):
+    for component in _strings(source, raw.get("disable_components"), "disable_components"):
         if not COMPONENT.match(component):
-            _fail(path, f"disable_components entry {component!r} is not a class name")
+            _fail(source, f"disable_components entry {component!r} is not a class name")
         recipe.disable_components.append(component)
-    domains = _strings(path, raw.get("sinkhole_domains"), "sinkhole_domains")
+    domains = _strings(source, raw.get("sinkhole_domains"), "sinkhole_domains")
     recipe.sinkhole_domains = sinkhole.validate_recipe_domains(domains, allow_custom=allow_custom_domains)
     recipe.custom_sinkhole_domains = sinkhole.custom_domains(recipe.sinkhole_domains)
     recipe.allow_custom_domains = bool(allow_custom_domains)
     return recipe
+
+
+def load(path, *, allow_custom_domains=False):
+    """Load and validate a recipe file."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ValueError(f"Recipe {path}: cannot read file ({error})") from error
+    return loads(text, source=path, allow_custom_domains=allow_custom_domains)
