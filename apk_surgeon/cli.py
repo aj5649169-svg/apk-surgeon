@@ -64,8 +64,8 @@ def doctor(args):
     if shutil.which("apktool"):
         version = subprocess.check_output(["apktool", "--version"], text=True).strip()
         match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
-        if not match or tuple(map(int, match.groups())) < (3, 0, 2):
-            console.print("Warning: upgrade Apktool to 3.0.2 or newer. CVE-2026-39973 affects 3.0.0 and 3.0.1.")
+        if not match or tuple(map(int, match.groups())) < (3, 0, 3):
+            console.print("Warning: upgrade Apktool to 3.0.3 or newer. CVE-2026-39973 affects 3.0.0 and 3.0.1.")
     try:
         target = engines.resolve_apkeditor(args.apkeditor_jar)
     except engines.EngineError as error:

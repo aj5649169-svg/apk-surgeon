@@ -8,7 +8,7 @@ re-signs APKs that people install on real devices.
 - Run `pytest -q` after every substantive change. `ruff check .` must also pass.
 - Never install a JDK, Android SDK, build-tools, Apktool or APKEditor in a cloud
   sandbox. Tests that need them are guarded by `TEST_ANDROID_JAR` and run in
-  GitHub Actions, which provisions Java 17, Build Tools 35, Apktool 3.0.2 and
+  GitHub Actions, which provisions Java 17, Build Tools 35, Apktool 3.0.3 and
   APKEditor 1.4.9.
 - Never mark a test `skip` to make a failure disappear. A missing optional tool
   may skip; a broken assertion may not.

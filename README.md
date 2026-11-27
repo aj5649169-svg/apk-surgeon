@@ -9,7 +9,7 @@ opt-in power-user audit patches.
 
 ## Quick start
 
-Install Python 3.10+, Java 17, Apktool 3.0.2+, and Android SDK Build Tools 35+
+Install Python 3.10+, Java 17, Apktool 3.0.3+, and Android SDK Build Tools 35+
 (including `zipalign` and `apksigner`). Run from a clone:
 
 ```sh
@@ -101,7 +101,7 @@ apk-surgeon clean big.apk --selective-dex --sinkhole -o review/big.apk
 
 A pure-Python DEX string-pool scanner reads only the 112-byte header and
 `string_ids` table of each `classes*.dex` (bounds checked, MUTF-8 safe, DEX
-035-042). Only the DEX files that actually mention a tracker package, hook class
+035-041). Only the DEX files that actually mention a tracker package, hook class
 or telemetry host are disassembled, patched and reassembled; the result is
 spliced back into a copy of the original APK so every other entry — including
 `resources.arsc`, `res/` and native libraries — keeps its exact bytes and
@@ -230,7 +230,7 @@ CI builds synthetic APKs, then exercises Apktool and APKEditor round trips,
 `PATH`, `TEST_ANDROID_JAR` pointing at an SDK `android.jar`, and
 `APK_SURGEON_APKEDITOR_JAR` pointing at `APKEditor-1.4.9.jar`.
 
-Use Apktool 3.0.2 or newer (CVE-2026-39973 affects 3.0.0/3.0.1) and Android
+Use Apktool 3.0.3 or newer (CVE-2026-39973 affects 3.0.0/3.0.1) and Android
 Build Tools 35+. The legacy `zipalign` fallback is accepted only if the resulting
 resource table and stored native libraries actually satisfy alignment checks.
 ZIP alignment cannot fix an incompatible ELF binary.

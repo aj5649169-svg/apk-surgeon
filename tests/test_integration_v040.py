@@ -64,13 +64,16 @@ def build_apk(tmp_path, *, two_dex=False, split=False):
     apk = tmp_path / ("split.apk" if split else "fixture.apk")
     run("aapt2", "link", "-I", os.environ["TEST_ANDROID_JAR"], "--manifest", manifest, "-o", apk, compiled)
     classes = tmp_path / "classes"
-    run("javac", "--release", "8", "-d", classes, java, other)
+    classes.mkdir(parents=True, exist_ok=True)
+    run("javac", "--release", "8", "-classpath", os.environ["TEST_ANDROID_JAR"], "-d", classes, java, other)
     one = tmp_path / "dex1"
+    one.mkdir(parents=True, exist_ok=True)
     run("d8", "--lib", os.environ["TEST_ANDROID_JAR"], "--output", one,
         classes / (TRACKER + ".class"))
     dexs = {"classes.dex": (one / "classes.dex").read_bytes()}
     if two_dex:
         second = tmp_path / "dex2"
+        second.mkdir(parents=True, exist_ok=True)
         run("d8", "--lib", os.environ["TEST_ANDROID_JAR"], "--output", second,
             classes / "com/example/Other.class")
         dexs["classes2.dex"] = (second / "classes.dex").read_bytes()
