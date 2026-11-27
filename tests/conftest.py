@@ -64,6 +64,48 @@ def make_dex(strings, version=35, header_size=None):
     return bytes(header) + table + bytes(payload)
 
 
+def make_dex_container(sections):
+    """Build a multi-section DEX 041 container with container-relative offsets."""
+    body = bytearray()
+    sec_meta = []
+    for strings in sections:
+        pad = (-len(body)) % 4
+        if pad:
+            body += b"\x00" * pad
+        sec_off = len(body)
+        count = len(strings)
+        ids_off = sec_off + 120
+        data_off = ids_off + 4 * count
+        payload = bytearray()
+        offsets = []
+        for text in strings:
+            offsets.append(data_off + len(payload))
+            payload += uleb128(len(text)) + mutf8_encode(text) + b"\x00"
+        raw_end = data_off + len(payload)
+        pad_end = (-raw_end) % 4
+        sec_size = raw_end + pad_end - sec_off
+        sec_header = bytearray(120)
+        sec_header[0:8] = b"dex\n041\x00"
+        struct.pack_into("<I", sec_header, 0x20, sec_size)
+        struct.pack_into("<I", sec_header, 0x24, 120)
+        struct.pack_into("<I", sec_header, 0x28, 0x12345678)
+        struct.pack_into("<I", sec_header, 0x38, count)
+        struct.pack_into("<I", sec_header, 0x3C, ids_off)
+        struct.pack_into("<I", sec_header, 0x74, sec_off)
+        table = b"".join(struct.pack("<I", offset) for offset in offsets)
+        body += sec_header + table + payload + (b"\x00" * pad_end)
+        sec_meta.append(sec_off)
+    total = len(body)
+    for sec_off in sec_meta:
+        struct.pack_into("<I", body, sec_off + 0x70, total)
+    return bytes(body)
+
+
 @pytest.fixture
 def dex_bytes():
     return make_dex
+
+
+@pytest.fixture
+def dex_container_bytes():
+    return make_dex_container

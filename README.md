@@ -2,10 +2,11 @@
 
 Find known Android tracking SDKs, review an exact patch, and build a locally signed copy. Use it for personal privacy audits on APKs you own or have authorization to modify. Check licensing and distribution permissions before sharing modified software.
 
-`v0.4.0` is the release-hardening release: a second decode/rebuild engine for
-APKs whose resources defeat `aapt2`, selective multi-DEX patching, telemetry URL
-sinkholing, native-framework and Pairip detection, split-bundle merging, and
-opt-in power-user audit patches.
+`v0.5.0` adds a full raw APK toolkit (`decode`, `build`, `merge`, `sign`,
+`inspect`) alongside the v0.4.0 privacy audit engine (APKEditor fallback,
+selective multi-DEX patching, telemetry URL sinkholing, native-framework and
+Pairip detection, split-bundle merging, DEX 041 container scanning, and
+opt-in power-user audit patches).
 
 ## Quick start
 
@@ -15,9 +16,37 @@ Install Python 3.10+, Java 17, Apktool 3.0.3+, and Android SDK Build Tools 35+
 ```sh
 pip install -e .
 apk-surgeon doctor
+apk-surgeon inspect app.apk
 apk-surgeon scan app.apk
 apk-surgeon clean app.apk -o review/app-clean.apk
 ```
+
+## Raw APK toolkit (`decode`, `build`, `merge`, `sign`, `inspect`)
+
+`apk-surgeon` can act as a safe, 16 KiB–aligned drop-in wrapper over Apktool and APKEditor without requiring privacy patches:
+
+```sh
+# Fast read-only inspection (file size, ABIs, DEX versions, Pairip, frameworks, aapt2 badging)
+apk-surgeon inspect app.apk --json
+
+# Decode cleanly (auto-falls back to APKEditor on resource decode failures; --force to overwrite)
+apk-surgeon decode app.apk -o work/app-decoded
+apk-surgeon decode app.apk -o work/smali-only -r     # skip resources (-r / --no-res)
+apk-surgeon decode app.apk -o work/res-only -s       # skip smali (-s / --no-src)
+
+# Rebuild from decoded tree (auto-detects Apktool vs APKEditor, 16 KiB zipalign + sign by default)
+apk-surgeon build work/app-decoded -o dist/app-rebuilt.apk
+apk-surgeon build work/app-decoded -o dist/app-unsigned.apk --unsigned
+
+# Merge split bundles (.xapk / .apkm / .apks), normalize extractNativeLibs, align and sign
+apk-surgeon merge app.xapk --abi arm64-v8a -o dist/standalone.apk
+
+# Re-sign any APK safely (strips stale META-INF/Play stamps, enforces ZIP_STORED + 16 KiB zipalign)
+apk-surgeon sign app-unsigned.apk -o dist/app-signed.apk
+```
+
+Input APKs are never modified in place. Core Python helpers are importable from
+`apk_surgeon.toolkit` (`decode_apk`, `build_apk`, `merge_bundle`, `sign_apk`, `inspect_apk`).
 
 Use a fresh output directory. Read the unified diff and enter **y** to approve. Pass `--yes` for unattended deterministic patches. Originals of edited files are saved in `app-clean.backups/`; the input APK stays intact. The output directory also receives `privacy-report.md`.
 
@@ -122,11 +151,13 @@ Only a curated pure-telemetry allowlist is eligible: Google Analytics for
 Firebase measurement, AdMob/ad serving, Adjust, AppsFlyer, Mixpanel, Amplitude,
 Sentry ingest, Crashlytics, Microsoft telemetry, Braze, Segment, MIUI analytics,
 Flurry, Branch and legacy analytics buckets. Shared core domains
-(`googleapis.com`, `firebaseio.com`, `firestore.googleapis.com`,
-`identitytoolkit.googleapis.com`, `graph.facebook.com`, `googleusercontent.com`,
-`gstatic.com`, `cloudfront.net`, `amazonaws.com`, `apple.com`,
-`play.googleapis.com`) are hard-denied in code; a recipe that tries to add one
-fails with an explanation.
+(`googleapis.com`, `firebaseio.com`, `identitytoolkit.googleapis.com`,
+`graph.facebook.com`, `googleusercontent.com`, `gstatic.com`,
+`cloudfront.net`, `amazonaws.com`, `apple.com`, `play.googleapis.com`) are
+hard-denied in code. Custom telemetry domains outside the built-in allowlist are
+rejected by default; pass `--allow-custom-domains` to permit non-allowlisted
+custom domains from a `--recipe` (logged as a warning in console output and
+`privacy-report.md`).
 
 ## Frameworks, Pairip and the safety verdict
 
@@ -234,6 +265,24 @@ Use Apktool 3.0.3 or newer (CVE-2026-39973 affects 3.0.0/3.0.1) and Android
 Build Tools 35+. The legacy `zipalign` fallback is accepted only if the resulting
 resource table and stored native libraries actually satisfy alignment checks.
 ZIP alignment cannot fix an incompatible ELF binary.
+
+## Tested toolchain matrix
+
+| Component | Tested version (CI & Release) | Purpose |
+| --- | --- | --- |
+| Python | 3.10 – 3.12 (`3.12` in CI) | Core CLI, DEX 035–041 scanner, ZIP repack |
+| Java (Temurin JDK) | 17 | `keytool`, Apktool, APKEditor, `apksigner` |
+| Android SDK Build Tools | 35.0.0 (`platforms;android-35`) | `zipalign -P 16 -f 4`, `apksigner`, `aapt2` |
+| Apktool | 3.0.3 | Default decode/rebuild engine |
+| APKEditor | V1.4.9 (optional) | Aapt2-free decode/rebuild fallback & `merge` |
+
+## Responsible use
+
+APK Surgeon is built for personal privacy auditing, security research, and
+repairing or inspecting APKs you own or have explicit authorization to modify.
+Do not use it to redistribute commercial software, bypass licensing/DRM, or
+tamper with apps you lack permission to analyze. Always respect upstream
+licenses and test modified APKs on a non-production device.
 
 ## License and scope
 

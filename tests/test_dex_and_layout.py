@@ -142,3 +142,31 @@ def test_apkeditor_layout(tmp_path):
 def test_missing_manifest(tmp_path):
     assert layout.manifest(tmp_path) is None
     assert layout.res_dir(tmp_path) is None
+
+
+def test_dex041_container_iterates_all_logical_sections(tmp_path, dex_container_bytes):
+    data = dex_container_bytes([
+        ["Lcom/example/First;", "keep-me"],
+        ["Lcom/google/firebase/analytics/FirebaseAnalytics;", "https://app-measurement.com/a"],
+    ])
+    headers = list(dex_scanner.iter_headers(data))
+    assert len(headers) == 2
+    assert all(h.version == 41 and h.header_size == 120 and h.container_size == len(data) for h in headers)
+    assert headers[0].header_offset == 0
+    assert headers[1].header_offset == headers[0].file_size
+    assert list(dex_scanner.strings(data)) == [
+        "Lcom/example/First;",
+        "keep-me",
+        "Lcom/google/firebase/analytics/FirebaseAnalytics;",
+        "https://app-measurement.com/a",
+    ]
+    apk = tmp_path / "container.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("classes.dex", data)
+    matches = dex_scanner.find_matches(apk, ["com/google/firebase/analytics", "app-measurement.com"])
+    assert matches == {"classes.dex": ["app-measurement.com", "com/google/firebase/analytics"]}
+
+    broken = bytearray(data)
+    struct.pack_into("<I", broken, headers[1].header_offset + 0x74, 999)
+    with pytest.raises(dex_scanner.DexError, match="header_offset"):
+        list(dex_scanner.iter_headers(bytes(broken)))

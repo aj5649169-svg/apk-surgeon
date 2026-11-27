@@ -68,6 +68,7 @@ CONST_STRING = re.compile(
     re.M,
 )
 URL_LITERAL = re.compile(r"^https?://[^\s\"']+$", re.I)
+CUSTOM_HOST = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$")
 UNESCAPE = (("\\/", "/"), ('\\"', '"'), ("\\\\", "\\"))
 
 
@@ -85,8 +86,18 @@ def denied(host):
     return any(host == item or host.endswith("." + item) for item in DENYLIST)
 
 
-def allowlisted(host, path=""):
-    """True only for known pure-telemetry endpoints."""
+def _matches_extra(host, extra):
+    if not extra:
+        return False
+    for candidate in extra:
+        item = normalize(candidate)
+        if item and (host == item or host.endswith("." + item)):
+            return True
+    return False
+
+
+def allowlisted(host, path="", *, extra=None):
+    """True for pure-telemetry endpoints (or approved custom hosts not on DENYLIST)."""
     host = normalize(host)
     if not host:
         return False
@@ -101,6 +112,8 @@ def allowlisted(host, path=""):
     prefixes = PATH_ALLOWLIST.get(host)
     if prefixes and (path or "").startswith(prefixes):
         return not denied(host)
+    if _matches_extra(host, extra) and not denied(host):
+        return True
     return False
 
 
@@ -118,19 +131,19 @@ def host_of(value):
     return normalize(parts.hostname or ""), parts.path or ""
 
 
-def sinkholeable(value):
-    """True when a smali string literal is a pure-telemetry URL."""
+def sinkholeable(value, *, extra=None):
+    """True when a smali string literal is a sinkhole-eligible URL."""
     host, path = host_of(value)
-    return bool(host) and allowlisted(host, path)
+    return bool(host) and allowlisted(host, path, extra=extra)
 
 
-def rewrite(text):
+def rewrite(text, *, extra=None):
     """Rewrite allowlisted const-string URLs.  Returns (text, replacements)."""
     replacements = []
 
     def replace(match):
         value = match.group("value")
-        if not sinkholeable(value):
+        if not sinkholeable(value, extra=extra):
             return match.group(0)
         replacements.append((value, SINKHOLE))
         return match.group("prefix") + SINKHOLE + match.group("suffix")
@@ -138,28 +151,39 @@ def rewrite(text):
     return CONST_STRING.sub(replace, text), replacements
 
 
-def candidates(text):
-    """Return the allowlisted URLs present in a smali file."""
+def candidates(text, *, extra=None):
+    """Return the sinkholeable URLs present in a smali file."""
     found = []
     for match in CONST_STRING.finditer(text):
         value = match.group("value")
-        if sinkholeable(value):
+        if sinkholeable(value, extra=extra):
             found.append(value)
     return found
 
 
-def validate_recipe_domains(domains):
-    """Raise when a recipe tries to add a protected or unknown domain."""
-    protected = sorted({domain for domain in domains if denied(domain)})
+def custom_domains(domains):
+    """Return sorted normalized domains that are outside the built-in telemetry allowlist."""
+    return sorted({normalize(d) for d in domains if normalize(d) and not allowlisted(d)})
+
+
+def validate_recipe_domains(domains, *, allow_custom=False):
+    """Raise when a recipe tries to add a protected or unapproved domain."""
+    normalized = [normalize(domain) for domain in domains]
+    invalid = sorted({domain for domain in normalized if not CUSTOM_HOST.fullmatch(domain)})
+    if invalid:
+        raise ValueError("Recipe sinkhole_domains must be valid hostnames: " + ", ".join(invalid))
+    protected = sorted({domain for domain in normalized if denied(domain)})
     if protected:
         raise DeniedDomain(
             "Recipe cannot sinkhole protected shared domains: " + ", ".join(protected)
             + ". These serve logins, storage or CDN assets and would break the app."
         )
-    unknown = sorted({domain for domain in domains if not allowlisted(domain)})
-    if unknown:
-        raise DeniedDomain(
-            "Recipe sinkhole domain is not on the pure-telemetry allowlist: " + ", ".join(unknown)
-            + ". Add it to apk_surgeon/sinkhole.py only after verifying it is telemetry-only."
-        )
-    return sorted({normalize(domain) for domain in domains})
+    if not allow_custom:
+        unknown = sorted({domain for domain in normalized if not allowlisted(domain)})
+        if unknown:
+            raise DeniedDomain(
+                "Recipe sinkhole domain is not on the pure-telemetry allowlist: " + ", ".join(unknown)
+                + ". Pass --allow-custom-domains to override with a warning, or add pure telemetry hosts to "
+                "apk_surgeon/sinkhole.py."
+            )
+    return sorted(set(normalized))
