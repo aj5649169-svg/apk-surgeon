@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -15,12 +16,14 @@ from apk_surgeon.scanner import ANDROID, exodus
 @pytest.mark.skipif(shutil.which("keytool") is None, reason="keytool from a JDK is not installed")
 def test_persistent_key(tmp_path,monkeypatch):
     monkeypatch.setenv("HOME",str(tmp_path))
+    monkeypatch.setenv("USERPROFILE",str(tmp_path))
     args = SimpleNamespace(keystore=None,ks_alias=None,ks_pass=None)
     key, alias, env = signing.identity(args)
     first = key.read_bytes()
     key2, _, env2 = signing.identity(args)
     assert key2.read_bytes() == first and env2["KS_SECRET"] == env["KS_SECRET"]
-    assert key.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert key.stat().st_mode & 0o777 == 0o600
 
 
 def test_old_zipalign(tmp_path,monkeypatch):

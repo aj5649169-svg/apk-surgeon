@@ -300,3 +300,116 @@ def test_ui_cli_help_subprocess_banner_and_package_data_bundling():
     assert '"ui_assets/*"' in pyproject_text
     for asset in ("index.html", "app.css", "app.js"):
         assert (root / "apk_surgeon/ui_assets" / asset).is_file()
+
+
+def test_ui_doctor_error_propagation_verify_fail_and_percent_encoded_artifacts(
+    live_ui, tmp_path, monkeypatch, dex_bytes
+):
+    server, base, token = live_ui
+
+    # 1. Doctor invokes resolved apktool executable and reports health-check warning on failure
+    monkeypatch.setattr(ui.shutil, "which", lambda n: rf"C:\tools\{n}.CMD" if n == "apktool" else f"/bin/{n}")
+    seen_doc_cmds = []
+
+    def fake_doc_out(cmd, **kwargs):
+        seen_doc_cmds.append(list(cmd))
+        raise subprocess.CalledProcessError(1, cmd, output="broken java shim")
+
+    monkeypatch.setattr(ui.subprocess, "check_output", fake_doc_out)
+    st_doc, _, doc_body = _req(f"{base}/api/doctor")
+    doc = json.loads(doc_body)
+    assert st_doc == 200
+    assert seen_doc_cmds[0][0] == r"C:\tools\apktool.CMD"
+    apktool_row = next(r for r in doc["tools"] if r["name"] == "apktool")
+    assert apktool_row["version"] == "unknown" and "failed health check" in apktool_row["warning"]
+
+    # 2. CalledProcessError stderr surfaces cleanly in Sign job errors
+    apk = _make_apk(tmp_path / "my app.apk", {"classes.dex": dex_bytes(["a"])})
+
+    def fake_sign_fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, [r"C:\tools\apksigner.BAT", "sign"], output="", stderr="ERROR: Wrong keystore password"
+        )
+
+    monkeypatch.setattr(ui.toolkit, "sign_apk", fake_sign_fail)
+    st_s, _, body_s = _req(
+        f"{base}/api/jobs",
+        method="POST",
+        body=json.dumps({"type": "sign", "path": str(apk)}).encode("utf-8"),
+        headers={"X-APK-Surgeon-Token": token, "Content-Type": "application/json"},
+    )
+    assert st_s == 202
+    jid_fail = json.loads(body_s)["job"]["id"]
+    with urllib.request.urlopen(f"{base}/api/jobs/{jid_fail}/events", timeout=5) as stream:
+        sse_fail = stream.read().decode("utf-8")
+    assert "Wrong keystore password" in sse_fail
+    _, _, fin_fail = _req(f"{base}/api/jobs/{jid_fail}")
+    job_fail = json.loads(fin_fail)["job"]
+    assert job_fail["status"] == "error"
+    assert "apksigner.BAT failed (exit 1)" in job_fail["error"]
+    assert "Wrong keystore password" in job_fail["error"]
+
+    # 3. Verify reporting FAIL sets clear summary/step and keeps matrix data
+    monkeypatch.setattr(
+        ui.verify, "verify",
+        lambda parts: {
+            "ok": False,
+            "apks": [{
+                "apk": parts[0].name,
+                "errors": ["DOES NOT VERIFY"],
+                "certificates_sha256": [],
+                "schemes": {"v1": False, "v2": False, "v3": False, "v4": None},
+                "aligned": True,
+            }],
+        },
+    )
+    st_v, _, body_v = _req(
+        f"{base}/api/jobs",
+        method="POST",
+        body=json.dumps({"type": "verify", "path": str(apk)}).encode("utf-8"),
+        headers={"X-APK-Surgeon-Token": token, "Content-Type": "application/json"},
+    )
+    assert st_v == 202
+    jid_v = json.loads(body_v)["job"]["id"]
+    with urllib.request.urlopen(f"{base}/api/jobs/{jid_v}/events", timeout=5) as stream:
+        stream.read()
+    _, _, fin_v = _req(f"{base}/api/jobs/{jid_v}")
+    job_v = json.loads(fin_v)["job"]
+    assert job_v["status"] == "done" and job_v["step"] == "Verification FAIL"
+    assert job_v["summary"]["verified_ok"] is False
+    assert any("DOES NOT VERIFY" in entry["message"] for entry in job_v["logs"])
+
+    # 4. Sign success with spaces in filename produces valid percent-encoded downloadable URL
+    def fake_sign_ok(src, out, **kwargs):
+        out.write_bytes(b"PK-signed")
+        return {
+            "ok": True,
+            "output": str(out),
+            "verify": {"ok": True, "apks": [{"certificates_sha256": ["ab" * 32], "errors": []}]},
+        }
+
+    monkeypatch.setattr(ui.toolkit, "sign_apk", fake_sign_ok)
+    st_ok, _, body_ok = _req(
+        f"{base}/api/jobs",
+        method="POST",
+        body=json.dumps({"type": "sign", "path": str(apk)}).encode("utf-8"),
+        headers={"X-APK-Surgeon-Token": token, "Content-Type": "application/json"},
+    )
+    assert st_ok == 202
+    jid_ok = json.loads(body_ok)["job"]["id"]
+    with urllib.request.urlopen(f"{base}/api/jobs/{jid_ok}/events", timeout=5) as stream:
+        stream.read()
+    _, _, fin_ok = _req(f"{base}/api/jobs/{jid_ok}")
+    job_ok = json.loads(fin_ok)["job"]
+    assert job_ok["status"] == "done"
+    art_url = job_ok["artifacts"][0]["url"]
+    assert "%20" in art_url
+    st_dl, _, dl_bytes = _req(f"{base}{art_url}")
+    assert st_dl == 200 and dl_bytes == b"PK-signed"
+
+    # 5. Inline error banner markup & JS handlers exist cleanly without unsafe sinks
+    assets = Path(__file__).resolve().parents[1] / "apk_surgeon/ui_assets"
+    html_text = (assets / "index.html").read_text(encoding="utf-8")
+    js_text = (assets / "app.js").read_text(encoding="utf-8")
+    assert 'id="error-banner"' in html_text and 'id="verify-alert"' in html_text
+    assert "function showError" in js_text and "function clearError" in js_text

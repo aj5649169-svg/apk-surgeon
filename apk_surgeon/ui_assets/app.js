@@ -46,12 +46,37 @@
   }
 
   let toastTimer = null;
-  function showToast(msg) {
+  function showToast(msg, kind = "info") {
     const toast = document.getElementById("toast");
     toast.textContent = msg;
+    toast.className = kind === "error" ? "toast toast-error" : "toast";
     toast.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toast.hidden = true; }, 2600);
+    toastTimer = setTimeout(() => { toast.hidden = true; }, kind === "error" ? 4200 : 2600);
+  }
+
+  function showError(title, detail, { logToConsole = false, toast = true } = {}) {
+    const text = String(detail || title || "Unknown error").trim();
+    const banner = document.getElementById("error-banner");
+    document.getElementById("error-banner-title").textContent = title || "Operation Failed";
+    document.getElementById("error-banner-detail").textContent = text;
+    banner.hidden = false;
+    if (logToConsole) {
+      clearInterval(state.timerHandle);
+      document.getElementById("job-step").textContent = `${title || "Job"}: Failed`;
+      const bar = document.getElementById("job-progress");
+      bar.style.width = "100%";
+      bar.classList.add("is-error");
+      const logBox = document.getElementById("job-logs");
+      clear(logBox);
+      logBox.appendChild(el("div", { className: "log-line log-err" }, `Error: ${text}`));
+    }
+    if (toast) showToast(`${title || "Error"}: ${text.split("\n")[0]}`, "error");
+  }
+
+  function clearError() {
+    document.getElementById("error-banner").hidden = true;
+    document.getElementById("error-banner-detail").textContent = "";
   }
 
   async function apiJson(url, method = "GET", body = null) {
@@ -307,8 +332,16 @@
 
   function renderVerify(data) {
     document.getElementById("verify-box").hidden = false;
+    const alertBox = document.getElementById("verify-alert");
     const box = document.getElementById("verify-results");
     clear(box);
+    const failedRows = (data.apks || []).filter((r) => r.errors?.length);
+    if (data.ok === false || failedRows.length) {
+      alertBox.hidden = false;
+      alertBox.textContent = `Verification FAILED for ${failedRows.length || 1} APK(s). Review errors and scheme breakdown below.`;
+    } else {
+      alertBox.hidden = true;
+    }
     for (const row of data.apks || []) {
       const schemes = Object.entries(row.schemes || {})
         .map(([k, v]) => `${k}:${v === null ? "n/a" : (v ? "OK" : "NO")}`)
@@ -341,10 +374,14 @@
         onClick: async () => {
           listBox.querySelectorAll(".file-btn").forEach((n) => n.classList.remove("is-selected"));
           btn.classList.add("is-selected");
-          const fileData = await apiJson(
-            `/api/workspace-file?job_id=${encodeURIComponent(jobId)}&path=${encodeURIComponent(rel)}`
-          );
-          document.getElementById("decoded-file-content").textContent = fileData.content;
+          try {
+            const fileData = await apiJson(
+              `/api/workspace-file?job_id=${encodeURIComponent(jobId)}&path=${encodeURIComponent(rel)}`
+            );
+            document.getElementById("decoded-file-content").textContent = fileData.content;
+          } catch (err) {
+            showError("Could not load file", err.message);
+          }
         },
       }, rel);
       listBox.appendChild(btn);
@@ -365,9 +402,12 @@
     document.getElementById("viewer-modal").hidden = false;
   }
 
-  function renderJob(job) {
+  function renderJob(job, { fromHistory = false } = {}) {
     document.getElementById("job-step").textContent = `${job.type}: ${job.step}`;
-    document.getElementById("job-progress").style.width = `${job.progress || 0}%`;
+    const bar = document.getElementById("job-progress");
+    bar.style.width = `${job.progress || 0}%`;
+    const isVerifyFail = job.type === "verify" && (job.result?.ok === false || job.summary?.verified_ok === false);
+    bar.classList.toggle("is-error", job.status === "error" || isVerifyFail);
     if (job.status === "done" || job.status === "error") {
       document.getElementById("job-timer").textContent = `${(job.elapsed_ms / 1000).toFixed(1)}s`;
     }
@@ -375,7 +415,9 @@
     clear(logBox);
     for (const entry of job.logs || []) {
       const isErr = entry.message.startsWith("Error:");
-      logBox.appendChild(el("div", { className: `log-line${isErr ? " log-err" : ""}` }, entry.message));
+      const isWarn = entry.message.startsWith("Warning:");
+      const cls = isErr ? "log-line log-err" : (isWarn ? "log-line log-warn" : "log-line");
+      logBox.appendChild(el("div", { className: cls }, entry.message));
     }
     logBox.scrollTop = logBox.scrollHeight;
 
@@ -390,7 +432,7 @@
           actions.appendChild(el("button", {
             type: "button",
             className: "btn btn-ghost btn-sm",
-            onClick: () => openArtifactViewer(art).catch((e) => showToast(e.message)),
+            onClick: () => openArtifactViewer(art).catch((e) => showError("Artifact preview failed", e.message)),
           }, "View"));
         }
         actions.appendChild(el("a", {
@@ -407,6 +449,16 @@
         ));
       }
     }
+
+    if (fromHistory) {
+      if (job.status === "error") {
+        showError(`${job.type} failed`, job.error || "Job failed", { toast: false });
+      } else {
+        clearError();
+        if (job.type === "verify" && job.result) renderVerify(job.result);
+        else if (job.result?.verify) renderVerify(job.result.verify);
+      }
+    }
   }
 
   async function refreshHistory() {
@@ -418,32 +470,54 @@
       return;
     }
     for (const j of data.jobs.slice(0, 12)) {
-      const badgeCls = j.status === "done" ? "badge-safe" : (j.status === "error" ? "badge-danger" : "badge-warn");
+      let badgeCls = "badge-warn";
+      let badgeText = j.status;
+      if (j.status === "error") {
+        badgeCls = "badge-danger";
+      } else if (j.type === "verify" && j.summary?.verified_ok === false) {
+        badgeCls = "badge-danger";
+        badgeText = "FAIL";
+      } else if (j.status === "done") {
+        badgeCls = "badge-safe";
+      }
       let delta = "";
       if (j.summary?.input_size && j.summary?.output_size) {
         delta = ` (${fmtBytes(j.summary.input_size)} -> ${fmtBytes(j.summary.output_size)})`;
       } else if (j.summary?.privacy_score !== undefined) {
         delta = ` (score ${j.summary.privacy_score}/100)`;
       }
+      const cls = `history-item${state.activeJobId === j.id ? " is-selected" : ""}`;
       box.appendChild(el("div", {
-        className: "history-item",
-        onClick: () => renderJob(j),
+        className: cls,
+        onClick: () => {
+          state.activeJobId = j.id;
+          renderJob(j, { fromHistory: true });
+          refreshHistory().catch(() => {});
+        },
       },
         el("div", null,
           el("strong", null, `${j.type}${delta}`),
           el("div", { className: "muted small" }, `${(j.elapsed_ms / 1000).toFixed(1)}s • ${j.step}`)
         ),
-        el("span", { className: `badge ${badgeCls}` }, j.status)
+        el("span", { className: `badge ${badgeCls}` }, badgeText)
       ));
     }
   }
 
   function startJob(type, payload, onDone) {
+    clearError();
+    if (type === "verify" || type === "sign") {
+      document.getElementById("verify-box").hidden = true;
+      document.getElementById("verify-alert").hidden = true;
+    } else if (type === "clean_preview") {
+      document.getElementById("clean-preview-box").hidden = true;
+    }
     if (state.activeEventSource) {
       state.activeEventSource.close();
       state.activeEventSource = null;
     }
     clearInterval(state.timerHandle);
+    document.getElementById("job-progress").classList.remove("is-error");
     state.jobStartMs = Date.now();
     state.timerHandle = setInterval(() => {
       document.getElementById("job-timer").textContent = `${((Date.now() - state.jobStartMs) / 1000).toFixed(1)}s`;
@@ -454,63 +528,111 @@
       renderJob(job);
       const es = new EventSource(`/api/jobs/${encodeURIComponent(job.id)}/events`);
       state.activeEventSource = es;
+      let settled = false;
+
+      const finishJob = (updated) => {
+        if (settled) return;
+        settled = true;
+        es.close();
+        state.activeEventSource = null;
+        clearInterval(state.timerHandle);
+        renderJob(updated);
+        refreshHistory().catch(() => {});
+        if (updated.status === "done") {
+          if (onDone) onDone(updated);
+          if (type === "verify" && updated.result && !updated.result.ok) {
+            showToast("Verification FAILED — review diagnostics below", "error");
+          }
+        } else if (updated.status === "error") {
+          showError(`${type} failed`, updated.error || "Job failed");
+        }
+      };
+
       const handleEvent = (ev) => {
         const updated = JSON.parse(ev.data);
-        renderJob(updated);
         if (updated.status === "done" || updated.status === "error") {
-          es.close();
-          state.activeEventSource = null;
-          clearInterval(state.timerHandle);
-          refreshHistory().catch(() => {});
-          if (updated.status === "done" && onDone) onDone(updated);
-          if (updated.status === "error") showToast(updated.error || "Job failed");
+          finishJob(updated);
+        } else {
+          renderJob(updated);
         }
       };
       es.addEventListener("state", handleEvent);
       es.addEventListener("done", handleEvent);
       es.onerror = () => {
+        if (settled) return;
         es.close();
-        clearInterval(state.timerHandle);
+        state.activeEventSource = null;
+        apiJson(`/api/jobs/${encodeURIComponent(job.id)}`)
+          .then(({ job: latest }) => {
+            if (latest.status === "done" || latest.status === "error") {
+              finishJob(latest);
+            } else {
+              renderJob(latest);
+              clearInterval(state.timerHandle);
+              showError("Live stream interrupted", `Lost event stream while ${type} was ${latest.status}.`);
+            }
+          })
+          .catch((err) => {
+            showError(`${type} connection lost`, err.message, { logToConsole: true });
+          });
       };
     }).catch((err) => {
-      clearInterval(state.timerHandle);
-      showToast(err.message);
+      showError(`${type} could not start`, err.message, { logToConsole: true });
     });
   }
 
   async function uploadFile(file) {
     if (!file) return;
-    document.getElementById("active-target-name").textContent = `Uploading ${file.name}...`;
-    const resp = await fetch("/api/upload", {
-      method: "POST",
-      headers: {
-        "X-APK-Surgeon-Token": TOKEN,
-        "X-Filename": file.name,
-        "Content-Type": "application/octet-stream",
-      },
-      body: file,
-    });
-    const data = await resp.json().catch(() => ({ ok: false, error: `HTTP ${resp.status}` }));
-    if (!resp.ok || !data.ok) throw new Error(data.error || "Upload failed");
-    state.uploadId = data.upload_id;
-    state.targetLabel = data.filename;
-    state.targetSize = data.size;
-    document.getElementById("local-path-input").value = "";
-    document.getElementById("active-target-name").textContent = data.filename;
-    document.getElementById("active-target-meta").textContent = `Uploaded (${fmtBytes(data.size)})`;
-    updateCliPreview();
+    clearError();
+    const nameNode = document.getElementById("active-target-name");
+    const metaNode = document.getElementById("active-target-meta");
+    const prevName = nameNode.textContent;
+    const prevMeta = metaNode.textContent;
+    nameNode.textContent = `Uploading ${file.name}...`;
+    metaNode.textContent = `${fmtBytes(file.size)} — uploading to temporary UI workspace...`;
+    try {
+      const resp = await fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          "X-APK-Surgeon-Token": TOKEN,
+          "X-Filename": file.name,
+          "Content-Type": "application/octet-stream",
+        },
+        body: file,
+      });
+      const data = await resp.json().catch(() => ({ ok: false, error: `HTTP ${resp.status}` }));
+      if (!resp.ok || !data.ok) throw new Error(data.error || "Upload failed");
+      state.uploadId = data.upload_id;
+      state.targetLabel = data.filename;
+      state.targetSize = data.size;
+      document.getElementById("local-path-input").value = "";
+      nameNode.textContent = data.filename;
+      metaNode.textContent = `Uploaded (${fmtBytes(data.size)})`;
+      updateCliPreview();
+    } catch (err) {
+      nameNode.textContent = prevName;
+      metaNode.textContent = prevMeta;
+      throw err;
+    }
     await runQuickInspect();
   }
 
   async function runQuickInspect() {
+    clearError();
     const target = currentTargetPayload();
     if (!target.path && !target.upload_id) {
-      showToast("Upload a file or enter a local APK path first.");
+      showError("No APK target selected", "Upload an APK/bundle or enter a local file path first.");
       return;
     }
-    const data = await apiJson("/api/inspect", "POST", target);
-    renderInspect(data);
-    switchTab("inspect");
+    try {
+      const data = await apiJson("/api/inspect", "POST", target);
+      renderInspect(data);
+      switchTab("inspect");
+    } catch (err) {
+      document.getElementById("inspect-results").hidden = true;
+      document.getElementById("inspect-empty").hidden = false;
+      showError("Inspect failed", err.message, { logToConsole: true });
+    }
   }
 
   async function loadDoctor() {
@@ -629,14 +751,15 @@
     e.preventDefault();
     dz.classList.remove("is-drag");
     const file = e.dataTransfer?.files?.[0];
-    if (file) uploadFile(file).catch((err) => showToast(err.message));
+    if (file) uploadFile(file).catch((err) => showError("Upload failed", err.message, { logToConsole: true }));
   });
   picker.addEventListener("change", () => {
     const file = picker.files?.[0];
-    if (file) uploadFile(file).catch((err) => showToast(err.message));
+    if (file) uploadFile(file).catch((err) => showError("Upload failed", err.message, { logToConsole: true }));
   });
 
-  document.getElementById("btn-quick-inspect").addEventListener("click", () => runQuickInspect().catch((e) => showToast(e.message)));
+  document.getElementById("btn-dismiss-error").addEventListener("click", clearError);
+  document.getElementById("btn-quick-inspect").addEventListener("click", () => runQuickInspect());
   document.getElementById("btn-inspect-to-clean").addEventListener("click", () => switchTab("clean"));
   document.getElementById("btn-inspect-to-decode").addEventListener("click", () => switchTab("decode"));
   document.getElementById("btn-copy-cli").addEventListener("click", () => {
@@ -683,7 +806,9 @@
       no_src: document.getElementById("decode-no-src").checked,
       force: document.getElementById("decode-force").checked,
     };
-    startJob("decode", payload, (job) => loadDecodedBrowser(job.id, job.result.output).catch(() => {}));
+    startJob("decode", payload, (job) => {
+      loadDecodedBrowser(job.id, job.result.output).catch((err) => showError("Decoded file browser failed", err.message));
+    });
   });
   document.getElementById("btn-send-to-build").addEventListener("click", () => {
     if (state.lastDecodedRoot) document.getElementById("build-dir").value = state.lastDecodedRoot;
@@ -691,13 +816,17 @@
   });
 
   document.getElementById("btn-detect-engine").addEventListener("click", async () => {
+    clearError();
+    const badge = document.getElementById("detected-engine-badge");
     try {
       const dir = document.getElementById("build-dir").value.trim();
       const res = await apiJson("/api/detect-engine", "POST", { directory: dir });
-      document.getElementById("detected-engine-badge").textContent = `detected: ${res.engine}`;
-      document.getElementById("detected-engine-badge").className = "badge badge-safe";
+      badge.textContent = `detected: ${res.engine}`;
+      badge.className = "badge badge-safe";
     } catch (err) {
-      showToast(err.message);
+      badge.textContent = "detection failed";
+      badge.className = "badge badge-danger";
+      showError("Engine detection failed", err.message, { logToConsole: true });
     }
   });
 
@@ -743,7 +872,7 @@
   });
 
   document.getElementById("btn-doctor").addEventListener("click", () => {
-    loadDoctor().catch((e) => showToast(e.message));
+    loadDoctor().catch((e) => showError("Toolchain check failed", e.message));
     document.getElementById("doctor-drawer").hidden = false;
   });
   document.getElementById("btn-close-doctor").addEventListener("click", () => {
@@ -769,6 +898,9 @@
   });
 
   updateCliPreview();
-  loadDoctor().catch(() => {});
-  refreshHistory().catch(() => {});
+  loadDoctor().catch((err) => {
+    document.getElementById("doctor-summary").textContent = "Doctor Error";
+    showError("Toolchain doctor failed", err.message);
+  });
+  refreshHistory().catch((err) => showError("Failed loading session history", err.message, { toast: false }));
 })();

@@ -19,6 +19,18 @@ def parse_manifest(path):
     return tree
 
 
+def ensure_android_namespace(root):
+    """Ensure ``root`` declares ``xmlns:android`` so serialized attributes use ``android:``, not ``ns0:``."""
+    android_uri = ANDROID[1:-1]
+    if root.nsmap.get("android") == android_uri:
+        return root
+    rebuilt = etree.Element(root.tag, attrib=root.attrib, nsmap={**root.nsmap, "android": android_uri})
+    rebuilt.text = root.text
+    for child in list(root):
+        rebuilt.append(child)
+    return rebuilt
+
+
 def components(tree):
     package = tree.getroot().get("package", "")
     for node in tree.xpath("/manifest/application/*"):

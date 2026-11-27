@@ -40,6 +40,11 @@ class DecodeResult:
         return {"engine": self.engine, "decode_type": self.decode_type, "notes": list(self.notes)}
 
 
+def resolve_executable(name):
+    """Resolve an executable on PATH (including Windows .cmd/.bat shims) without shell=True."""
+    return shutil.which(str(name)) or str(name)
+
+
 def resolve_apkeditor(explicit=None):
     """Resolve APKEditor to a jar path or executable wrapper, or None."""
     for candidate in (explicit, os.getenv(ENV_JAR)):
@@ -75,7 +80,9 @@ def run(argv, what):
     try:
         result = subprocess.run(argv, capture_output=True, text=True)
     except OSError as error:
-        raise EngineError(f"{what} could not start: {error}") from error
+        cmd = argv[0] if argv else what
+        hint = " (not found on PATH or not executable)" if isinstance(error, FileNotFoundError) else ""
+        raise EngineError(f"{what} could not start {cmd!r}{hint}: {error}") from error
     if result.returncode:
         lines = (result.stdout + "\n" + result.stderr).splitlines()
         useful = [line for line in lines if re.search(r"error|exception|failed|invalid|could not", line, re.I)]
@@ -90,7 +97,7 @@ def resource_failure(message):
 
 
 def decode_apktool(apk, root, *, no_res=False, no_src=False):
-    argv = ["apktool", "d"]
+    argv = [resolve_executable("apktool"), "d"]
     if no_res:
         argv.append("-r")
     if no_src:
@@ -120,7 +127,7 @@ def decode_apkeditor(jar, apk, root, *, types=DECODE_TYPES):
 
 
 def rebuild_apktool(root, output):
-    run(["apktool", "b", str(root), "-o", str(output)], "Apktool rebuild")
+    run([resolve_executable("apktool"), "b", str(root), "-o", str(output)], "Apktool rebuild")
     return output
 
 
