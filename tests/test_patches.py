@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from apk_surgeon.patcher import apply, patch_smali, plan
 from apk_surgeon.scanner import ANDROID, RULES, parse_manifest, scan

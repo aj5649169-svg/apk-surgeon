@@ -4,8 +4,8 @@ import re
 import urllib.request
 from urllib.parse import urlsplit
 
+from .evidence import HAZARDS, endpoints
 from .scanner import METHOD
-from .evidence import endpoints, HAZARDS
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -32,7 +32,7 @@ def analyze(root, url, model):
         with opener.open(req, timeout=60) as response:
             result = json.loads(json.loads(response.read(200000))["choices"][0]["message"]["content"])
         if (set(result) != {"method_name","reason","risk_level","safe_to_noop"} or result["method_name"] != method
-            or result["risk_level"] not in ("low","medium","high") or type(result["safe_to_noop"]) != bool
+            or result["risk_level"] not in ("low","medium","high") or not isinstance(result["safe_to_noop"], bool)
             or not isinstance(result["reason"], str)):
             raise ValueError("Invalid local model response")
         yield path, result

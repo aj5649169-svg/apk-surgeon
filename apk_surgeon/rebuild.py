@@ -1,24 +1,34 @@
-import copy
 import re
-import shutil
-import subprocess
-import zipfile
+
+from . import engines
 
 
-def rebuild(root, output, original=None):
-    result = subprocess.run(["apktool", "b", str(root), "-o", str(output)], capture_output=True, text=True)
-    if result.returncode:
-        lines = (result.stdout + "\n" + result.stderr).splitlines()
-        useful = [s for s in lines if re.search(r"error:|aapt2|invalid resource|failed to compile", s, re.I)]
-        detail = "\n".join((useful or lines)[0:6])[:1500]
-        hint = "\nRetry clean with --smali-only to preserve compiled resources." if useful and not original else ""
-        raise ValueError("Apktool rebuild failed.\n" + detail + hint)
+def rebuild(root, output, original=None, *, engine="apktool", jar=None):
+    """Rebuild a decoded tree.  Kept for API compatibility with v0.1-v0.3."""
+    if engine == "apkeditor":
+        if not jar:
+            raise engines.EngineError("APKEditor rebuild requires a jar path")
+        engines.rebuild_apkeditor(jar, root, output)
+    else:
+        try:
+            engines.rebuild_apktool(root, output)
+        except engines.EngineError as error:
+            hint = ""
+            if original is not None:
+                hint = "\nRetry clean with --smali-only to preserve compiled resources."
+            elif engines.resource_failure(str(error)):
+                hint = "\nRetry clean with --engine apkeditor to avoid aapt2."
+            raise engines.EngineError(str(error) + hint) from error
     if original:
         # Only transplant assembled DEX. Even unknown resource encodings survive.
+        from . import repack
+
+        with __import__("zipfile").ZipFile(output) as built:
+            replacements = {
+                name: built.read(name) for name in built.namelist()
+                if re.fullmatch(r"classes(?:[2-9]|[1-9]\d+)?\.dex", name)
+            }
         merged = output.with_suffix(".merged.apk")
-        with zipfile.ZipFile(original) as src, zipfile.ZipFile(output) as built, zipfile.ZipFile(merged, "w") as dst:
-            for entry in src.infolist():
-                source = built if re.fullmatch(r"classes(?:[2-9]|[1-9]\d+)?\.dex", entry.filename) else src
-                with source.open(entry.filename) as inp, dst.open(copy.copy(entry), "w") as out:
-                    shutil.copyfileobj(inp, out)
+        repack.repack(original, merged, replace=replacements)
         merged.replace(output)
+    return output

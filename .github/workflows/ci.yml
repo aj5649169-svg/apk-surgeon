@@ -2,7 +2,20 @@ name: APK Surgeon CI
 on: [push, pull_request]
 permissions:
   contents: read
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install "ruff==0.17.6"
+      - run: ruff check .
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -17,15 +30,36 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: pip install -e '.[test]'
-      - name: Prepare Android round-trip fixture tools
+      - name: Install Android SDK packages
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - name: Cache APKEditor V1.4.9 and Apktool 3.0.3
+        id: tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/surgeon-tools
+          key: apkeditor-1.4.9_apktool-3.0.3
+      - name: Install decode/rebuild engines
+        run: |
           mkdir -p "$RUNNER_TEMP/surgeon-tools"
           cd "$RUNNER_TEMP/surgeon-tools"
-          curl -fsSL --retry 3 https://github.com/iBotPeaches/Apktool/releases/download/v3.0.2/apktool_3.0.2.jar -o apktool.jar
+          if [ ! -f APKEditor-1.4.9.jar ]; then
+            curl -fsSL --retry 3 \
+              https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar \
+              -o APKEditor-1.4.9.jar
+          fi
+          if [ ! -f apktool.jar ]; then
+            curl -fsSL --retry 3 \
+              https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar \
+              -o apktool.jar
+          fi
           printf '#!/bin/sh\nexec java -jar "%s/apktool.jar" "$@"\n' "$PWD" > apktool
           chmod +x apktool
           echo "$PWD" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
-          echo "TEST_ANDROID_JAR=$ANDROID_HOME/platforms/android-35/android.jar" >> "$GITHUB_ENV"
-      - run: pytest -q
+          {
+            echo "TEST_ANDROID_JAR=$ANDROID_HOME/platforms/android-35/android.jar"
+            echo "APK_SURGEON_APKEDITOR_JAR=$PWD/APKEditor-1.4.9.jar"
+          } >> "$GITHUB_ENV"
+      - name: Unit and integration tests
+        run: pytest -q
