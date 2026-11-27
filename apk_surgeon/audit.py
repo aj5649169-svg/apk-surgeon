@@ -65,6 +65,53 @@ def merge_config(text):
     return etree.tostring(tree, encoding="UTF-8", xml_declaration=True).decode() + "\n"
 
 
+def _apkeditor_public_change(res_root, stem):
+    """Register ``@xml/<stem>`` in APKEditor's ``values/public.xml`` when needed."""
+    if res_root.parent.parent.name != "resources":
+        return None
+    pub_path = res_root / "values" / "public.xml"
+    if not pub_path.is_file():
+        return None
+    tree = etree.parse(str(pub_path), etree.XMLParser(resolve_entities=False, no_network=True))
+    if tree.docinfo.doctype:
+        raise ValueError("public.xml DTD is unsupported")
+    root = tree.getroot()
+    for node in root.findall("public"):
+        if node.attrib.get("type") == "xml" and node.attrib.get("name") == stem:
+            return None
+    ids = []
+    xml_ids = []
+    for node in root.findall("public"):
+        raw = node.attrib.get("id")
+        if not raw:
+            continue
+        try:
+            parsed = int(raw, 16)
+        except ValueError:
+            continue
+        ids.append(parsed)
+        if node.attrib.get("type") == "xml":
+            xml_ids.append(parsed)
+    pkg_raw = root.attrib.get("id")
+    if pkg_raw:
+        pkg_prefix = (int(pkg_raw, 16) & 0xFF) << 24
+    elif ids:
+        pkg_prefix = ids[0] & 0xFF000000
+    else:
+        pkg_prefix = 0x7F000000
+    if xml_ids:
+        next_id = max(xml_ids) + 1
+    else:
+        used_types = {(val >> 16) & 0xFF for val in ids}
+        next_type = next((t for t in range(1, 256) if t not in used_types), None)
+        if next_type is None:
+            raise ValueError("No free Android resource type ID available in public.xml")
+        next_id = pkg_prefix | (next_type << 16)
+    entry = etree.SubElement(root, "public", id=f"0x{next_id:08x}", type="xml", name=stem)
+    entry.tail = "\n"
+    return pub_path, etree.tostring(root, encoding="UTF-8", xml_declaration=True).decode() + "\n"
+
+
 def trust_user_ca(root, *, manifest_text=None):
     """Return changes installing or merging a user-CA network security config."""
     root = Path(root)
@@ -80,14 +127,15 @@ def trust_user_ca(root, *, manifest_text=None):
         tree = parse_manifest(manifest)
     if tree.docinfo.doctype:
         raise ValueError("Manifest DTD is unsupported")
-    config = config_path(root)
-    config.parent.mkdir(parents=True, exist_ok=True)
+    res_root = layout.res_dir(root) or (root / "res")
+    config = res_root / "xml" / CONFIG_NAME
     root_el = ensure_android_namespace(tree.getroot())
     application = root_el.find("application")
     if application is None:
         raise ValueError("Manifest has no <application> element")
     package = root_el.get("package", "")
-    reference = f"@xml/{Path(CONFIG_NAME).stem}"
+    stem = Path(CONFIG_NAME).stem
+    reference = f"@xml/{stem}"
     existing = application.get(ANDROID + "networkSecurityConfig")
     if existing:
         match = re.fullmatch(r"@xml/([A-Za-z0-9_.]+)", existing)
@@ -106,6 +154,10 @@ def trust_user_ca(root, *, manifest_text=None):
     application.set(ANDROID + "networkSecurityConfig", reference)
     changes = {manifest: etree.tostring(root_el, encoding="UTF-8", xml_declaration=True).decode() + "\n"}
     changes[config] = CONFIG_TEMPLATE
+    public_edit = _apkeditor_public_change(res_root, stem)
+    if public_edit is not None:
+        pub_path, pub_text = public_edit
+        changes[pub_path] = pub_text
     return changes, package
 
 

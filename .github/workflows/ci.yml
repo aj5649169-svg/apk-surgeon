@@ -17,7 +17,11 @@ jobs:
       - run: ruff check .
 
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,17 +33,31 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: pip install -e '.[test]'
-      - name: Install Android SDK packages
+      - run: python -m pip install -e ".[test]"
+      - name: Install Android SDK packages (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Android SDK packages (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
+          $mgr = Get-ChildItem -Path "$sdk\cmdline-tools" -Filter sdkmanager.bat -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $mgr) { throw "sdkmanager.bat not found under $sdk" }
+          $ErrorActionPreference = 'Continue'
+          1..30 | ForEach-Object { 'y' } | & $mgr --licenses | Out-Null
+          $ErrorActionPreference = 'Stop'
+          & $mgr "platforms;android-35" "build-tools;35.0.0"
       - name: Cache APKEditor V1.4.9 and Apktool 3.0.3
-        id: tools
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/surgeon-tools
-          key: apkeditor-1.4.9_apktool-3.0.3
-      - name: Install decode/rebuild engines
+          key: ${{ runner.os }}-apkeditor-1.4.9_apktool-3.0.3
+      - name: Install decode/rebuild engines (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/surgeon-tools"
           cd "$RUNNER_TEMP/surgeon-tools"
@@ -61,5 +79,53 @@ jobs:
             echo "TEST_ANDROID_JAR=$ANDROID_HOME/platforms/android-35/android.jar"
             echo "APK_SURGEON_APKEDITOR_JAR=$PWD/APKEditor-1.4.9.jar"
           } >> "$GITHUB_ENV"
+      - name: Install decode/rebuild engines (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP "surgeon-tools"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          $apkeditor = Join-Path $tools "APKEditor-1.4.9.jar"
+          $apktoolJar = Join-Path $tools "apktool.jar"
+          if (-not (Test-Path $apkeditor)) {
+            curl.exe -fsSL --retry 3 `
+              https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar `
+              -o $apkeditor
+          }
+          if (-not (Test-Path $apktoolJar)) {
+            curl.exe -fsSL --retry 3 `
+              https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar `
+              -o $apktoolJar
+          }
+          "@echo off`r`njava -jar `"%~dp0apktool.jar`" %*`r`n" | Set-Content -Path (Join-Path $tools "apktool.cmd") -Encoding Ascii
+          $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
+          $bt = Join-Path $sdk "build-tools\35.0.0"
+          $tools | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $bt | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          @(
+            "TEST_ANDROID_JAR=$sdk\platforms\android-35\android.jar"
+            "APK_SURGEON_APKEDITOR_JAR=$apkeditor"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Unit and integration tests
         run: pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m pip install -e ".[test]" build
+      - name: Unit tests on Python 3.10
+        run: pytest -q
+      - name: Build and smoke-test wheel install
+        run: |
+          python -m build --wheel --sdist
+          python -m venv /tmp/smoke-venv
+          /tmp/smoke-venv/bin/pip install dist/*.whl
+          /tmp/smoke-venv/bin/apk-surgeon --version
+          /tmp/smoke-venv/bin/apk-surgeon clean --help
+          /tmp/smoke-venv/bin/apk-surgeon ui --help

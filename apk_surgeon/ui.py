@@ -2,7 +2,6 @@
 
 import hmac
 import ipaddress
-import itertools
 import json
 import mimetypes
 import re
@@ -25,16 +24,71 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from lxml.etree import XMLSyntaxError
 
-from . import __version__, cli, engines, frameworks, patcher, recipe, signing, sinkhole, toolkit, verify
-from .bundles import select_abi, unpack
+from . import __version__, cli, engines, pipeline, recipe, toolkit, verify
+from .bundles import unpack
 
 ASSETS_DIR = Path(__file__).with_name("ui_assets")
 UPLOAD_EXTENSIONS = {".apk", ".apks", ".xapk", ".apkm"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_PREVIEW_BYTES = 2 * 1024 * 1024
-MAX_DIFF_LINES = 2500
+MAX_LOG_LINES = 400
 INLINE_TEXT_SUFFIXES = {".md", ".txt", ".xml", ".diff", ".json", ".yml", ".yaml", ".smali"}
+
+
+class _LogBatcher:
+    """Coalesce streaming subprocess output lines into bounded SSE updates."""
+
+    def __init__(self, emit_fn, interval=0.25):
+        self._emit_fn = emit_fn
+        self._interval = interval
+        self._lock = threading.Lock()
+        self._buf = []
+        self._timer = None
+        self._closed = False
+
+    def push(self, line):
+        text = str(line).rstrip()
+        if not text:
+            return
+        with self._lock:
+            if self._closed:
+                return
+            self._buf.append(text)
+            if len(self._buf) >= 20:
+                batch = self._pop_locked()
+            elif self._timer is None:
+                self._timer = threading.Timer(self._interval, self.flush)
+                self._timer.daemon = True
+                self._timer.start()
+                batch = None
+            else:
+                batch = None
+        if batch:
+            self._emit_fn(batch)
+
+    def _pop_locked(self):
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        if not self._buf:
+            return None
+        batch = self._buf
+        self._buf = []
+        return batch
+
+    def flush(self):
+        with self._lock:
+            batch = self._pop_locked()
+        if batch:
+            self._emit_fn(batch)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            batch = self._pop_locked()
+        if batch:
+            self._emit_fn(batch)
 
 
 def is_loopback_host(host):
@@ -159,6 +213,27 @@ class JobManager:
         self.job_order = []
 
     def close(self):
+        with self._lock:
+            active = list(self.jobs.values())
+        for job in active:
+            ev = job.get("cancel_event")
+            if ev is not None:
+                ev.set()
+            with job["pid_lock"]:
+                pids = list(job["pids"])
+            for pid in pids:
+                engines.terminate_process_tree(pid)
+            with job["cond"]:
+                if job["status"] in {"queued", "running"}:
+                    job["status"] = "cancelled"
+                    job["step"] = "Cancelled"
+                    job["progress"] = 100
+                    job["finished_at"] = time.time()
+                    if job["started_at"]:
+                        job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
+                    payload = self._serialize_job(job)
+                    job["events"].append({"type": "done", "data": payload})
+                    job["cond"].notify_all()
         if self._owns_temp and self.workspace.exists():
             shutil.rmtree(self.workspace, ignore_errors=True)
 
@@ -237,6 +312,9 @@ class JobManager:
             "logs": [],
             "events": [],
             "cond": threading.Condition(),
+            "cancel_event": threading.Event(),
+            "pids": set(),
+            "pid_lock": threading.Lock(),
             "dir": job_dir,
             "decoded_dir": None,
             "artifact_map": {},
@@ -258,39 +336,89 @@ class JobManager:
 
     def list_jobs(self):
         with self._lock:
-            return [self._serialize_job(self.jobs[jid]) for jid in self.job_order]
+            jobs = [self.jobs[jid] for jid in self.job_order]
+        return [self._serialize_job(job) for job in jobs]
 
     def _serialize_job(self, job):
-        elapsed = job["elapsed_ms"]
-        if job["started_at"] and not job["finished_at"]:
-            elapsed = int((time.time() - job["started_at"]) * 1000)
-        return {
-            "id": job["id"],
-            "type": job["type"],
-            "status": job["status"],
-            "step": job["step"],
-            "progress": job["progress"],
-            "elapsed_ms": elapsed,
-            "logs": list(job["logs"]),
-            "artifacts": list(job["artifacts"]),
-            "decoded_dir": str(job["decoded_dir"]) if job["decoded_dir"] else None,
-            "result": job["result"],
-            "error": job["error"],
-            "summary": job["summary"],
-        }
+        with job["cond"]:
+            elapsed = job["elapsed_ms"]
+            if job["started_at"] and not job["finished_at"]:
+                elapsed = int((time.time() - job["started_at"]) * 1000)
+            return {
+                "id": job["id"],
+                "type": job["type"],
+                "status": job["status"],
+                "step": job["step"],
+                "progress": job["progress"],
+                "elapsed_ms": elapsed,
+                "logs": list(job["logs"]),
+                "artifacts": list(job["artifacts"]),
+                "decoded_dir": str(job["decoded_dir"]) if job["decoded_dir"] else None,
+                "result": job["result"],
+                "error": job["error"],
+                "summary": dict(job["summary"]),
+            }
 
-    def _emit(self, job, *, step=None, progress=None, log=None, event_type="state"):
+    @staticmethod
+    def _append_log(job, message):
+        job["logs"].append({"ts": round(time.time(), 2), "message": str(message)})
+        if len(job["logs"]) > MAX_LOG_LINES:
+            del job["logs"][:-MAX_LOG_LINES]
+
+    def _emit(self, job, *, step=None, progress=None, log=None, logs=None, event_type="state"):
         with job["cond"]:
             if step is not None:
                 job["step"] = step
             if progress is not None:
                 job["progress"] = progress
             if log is not None:
-                entry = {"ts": round(time.time(), 2), "message": str(log)}
-                job["logs"].append(entry)
+                self._append_log(job, log)
+            if logs:
+                for line in logs:
+                    self._append_log(job, line)
             payload = self._serialize_job(job)
             job["events"].append({"type": event_type, "data": payload})
             job["cond"].notify_all()
+
+    @staticmethod
+    def _track_pid(job, pid, active):
+        with job["pid_lock"]:
+            if active:
+                job["pids"].add(pid)
+            else:
+                job["pids"].discard(pid)
+        if active and job["cancel_event"].is_set():
+            engines.terminate_process_tree(pid)
+
+    def cancel_job(self, job_id):
+        job = self.get_job(job_id)
+        if not job:
+            return None
+        with job["cond"]:
+            status = job["status"]
+            already_terminal = status in {"done", "error", "cancelled"}
+            if not already_terminal:
+                job["cancel_event"].set()
+                was_queued = status == "queued"
+                if was_queued:
+                    job["status"] = "cancelled"
+                    job["step"] = "Cancelled"
+                    job["progress"] = 100
+                    job["finished_at"] = time.time()
+                    if job["started_at"]:
+                        job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
+                else:
+                    job["step"] = "Cancelling..."
+                self._append_log(job, "Cancellation requested by user.")
+                payload = self._serialize_job(job)
+                job["events"].append({"type": "done" if was_queued else "state", "data": payload})
+                job["cond"].notify_all()
+        if not already_terminal:
+            with job["pid_lock"]:
+                pids = list(job["pids"])
+            for pid in pids:
+                engines.terminate_process_tree(pid)
+        return self._serialize_job(job)
 
     def _register_artifact(self, job, path, label, kind="file"):
         path = Path(path).resolve()
@@ -334,10 +462,23 @@ class JobManager:
     def _run_job(self, job, payload):
         job["started_at"] = time.time()
         with job["cond"]:
+            if job["cancel_event"].is_set() or job["status"] == "cancelled":
+                return
             job["status"] = "running"
+        batcher = _LogBatcher(lambda lines: self._emit(job, logs=lines))
         self._emit(job, step="Starting", progress=5, log=f"Starting {job['type']} job {job['id']}...")
         try:
-            result = self._dispatch(job, payload)
+            if job["cancel_event"].is_set():
+                raise engines.CancelledError("Job cancelled by user.")
+            with engines.execution_hooks(
+                on_line=batcher.push,
+                cancel_event=job["cancel_event"],
+                on_pid=lambda pid, active: self._track_pid(job, pid, active),
+            ):
+                result = self._dispatch(job, payload)
+            batcher.close()
+            if job["cancel_event"].is_set():
+                raise engines.CancelledError("Job cancelled by user.")
             job["result"] = result
             job["finished_at"] = time.time()
             job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
@@ -354,7 +495,22 @@ class JobManager:
                 else "Job finished successfully."
             )
             self._emit(job, step=done_step, progress=100, log=done_log, event_type="done")
+        except engines.CancelledError as error:
+            batcher.close()
+            job["finished_at"] = time.time()
+            job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
+            with job["cond"]:
+                job["status"] = "cancelled"
+            self._emit(job, step="Cancelled", progress=100, log=str(error) or "Job cancelled.", event_type="done")
         except Exception as error:
+            batcher.close()
+            if job["cancel_event"].is_set():
+                job["finished_at"] = time.time()
+                job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
+                with job["cond"]:
+                    job["status"] = "cancelled"
+                self._emit(job, step="Cancelled", progress=100, log="Job cancelled by user.", event_type="done")
+                return
             msg = self._format_job_error(error)
             job["error"] = msg
             job["finished_at"] = time.time()
@@ -486,7 +642,6 @@ class JobManager:
 
     def _run_scan_or_clean(self, job, payload, *, mode):
         src = self.resolve_input(payload)
-        input_size = src.stat().st_size
         allow_custom = bool(payload.get("allow_custom_domains", False))
         loaded_recipe = None
         recipe_file = None
@@ -496,6 +651,8 @@ class JobManager:
             recipe_file.write_text(payload["recipe_yaml"], encoding="utf-8")
             loaded_recipe.path = recipe_file
         args = _clean_args_from_payload(payload, work_dir=job["dir"], recipe_path=recipe_file)
+        if payload.get("output"):
+            args.output = Path(payload["output"])
         notes = []
         if allow_custom:
             custom = loaded_recipe.custom_sinkhole_domains if loaded_recipe else []
@@ -507,240 +664,45 @@ class JobManager:
             notes.append(msg)
             self._emit(job, log=msg)
 
-        with tempfile.TemporaryDirectory() as temp:
-            work = Path(temp)
-            self._emit(job, step="Unpacking input", progress=15, log=f"Unpacking {src.name}...")
-            parts = unpack(src, work)
-            bundle = src.suffix.lower() != ".apk"
-            apkeditor = engines.resolve_apkeditor(args.apkeditor_jar)
-            bypass = args.smali_only
+        bundle_in = src.suffix.lower() != ".apk"
+        out_ext = ".apks" if bundle_in and not args.merge_splits else ".apk"
+        default_output = job["dir"] / f"{src.stem}-cleaned{out_ext}"
 
-            if args.abi and not bundle:
-                raise ValueError("--abi requires a split bundle")
-            if args.merge_splits and not bundle:
-                raise ValueError("--merge-splits requires a .xapk, .apkm or .apks bundle")
-            if args.merge_splits:
-                parts, _ = select_abi(parts, args.abi)
-                self._emit(job, step="Merging splits", progress=25, log="Merging splits with APKEditor...")
-                built = cli.merge_bundle(args, parts, work, apkeditor, notes=notes)
-                parts, bundle = [built], False
-            elif bundle:
-                parts, found = select_abi(parts, args.abi)
-                if len(found) > 1 and not args.abi:
-                    notes.append("Multiple ABIs detected (" + ", ".join(found) + "); filtering with --abi is recommended.")
+        def _on_event(*, step=None, progress=None, log=None):
+            self._emit(job, step=step, progress=progress, log=log)
 
-            detected = frameworks.detect(parts)
-            blocked, blocked_reasons = frameworks.pairip_detected(parts)
-            if blocked and mode == "clean" and not args.force_unsafe:
-                raise ValueError(
-                    "Refusing to patch a Pairip-protected APK. Use RethinkDNS/TrackerControl or pass "
-                    "--force-unsafe to override at your own risk."
-                )
-            if blocked and mode == "clean" and args.force_unsafe:
-                notes.append("Pairip BLOCKED overridden with --force-unsafe.")
-
-            if args.selective_dex and (
-                args.strip_ad_permissions or args.disable_providers or args.trust_user_ca
-                or (loaded_recipe and loaded_recipe.disable_components)
-            ):
-                raise ValueError("--selective-dex patches DEX files only and cannot edit AndroidManifest.xml")
-
-            selective_result = None
-            if mode == "clean" and (args.selective_dex or (bypass and not args.trust_user_ca)):
-                self._emit(job, step="Selective DEX scan", progress=40, log="Scanning DEX string pools...")
-                selective_result = cli.selective_clean(args, parts[0], work, loaded_recipe, notes)
-
-            if selective_result:
-                staged, backups = selective_result
-                evidence, safety = cli.assess_for_selective(staged, parts[1:], loaded_recipe)
-                families = sorted(evidence)
-                if not backups:
-                    return {"noop": True, "notes": notes, "safety": safety, "privacy_score": max(0, 100 - 4 * len(families))}
-                out_ext = ".apks" if bundle else ".apk"
-                out = (
-                    Path(payload["output"]).expanduser().resolve()
-                    if payload.get("output")
-                    else job["dir"] / f"{src.stem}-cleaned{out_ext}"
-                )
-                if out == src.resolve():
-                    raise ValueError("Refusing to modify input APK in place")
-                out.parent.mkdir(parents=True, exist_ok=True)
-                report = out.parent / "privacy-report.md"
-                backup = out.with_suffix(".backups")
-                backup.mkdir(exist_ok=True)
-                with zipfile.ZipFile(parts[0]) as archive:
-                    for name, _ in backups:
-                        (backup / (name + ".bak")).write_bytes(archive.read(name))
-                self._emit(job, step="Signing output", progress=80, log="Aligning & signing selective APK...")
-                signed = work / "signed.apk"
-                creds = signing.resolve_identity(keystore=args.keystore, ks_alias=args.ks_alias, ks_pass=args.ks_pass)
-                signing.sign(staged, work, signed, creds)
-                if bundle:
-                    signed = cli._pack_bundle(signed, parts, work, creds)
-                shutil.copyfile(signed, out)
-                changes = {Path(name): "" for name, _ in backups}
-                cli.write_report(report, src, families, safety, evidence, changes, notes, detected,
-                                 "apktool-selective", None, args, {"sinkholed": [], "screenshots": 0}, "base APK")
-                self._register_artifact(job, out, "Cleaned APK", kind="apk")
-                self._register_artifact(job, report, "Privacy Report", kind="report")
-                job["summary"] = {"input_size": input_size, "output_size": out.stat().st_size, "engine": "apktool-selective"}
-                return {
-                    "ok": True,
-                    "output": str(out),
-                    "report": str(report),
-                    "safety": safety,
-                    "privacy_score": max(0, 100 - 4 * len(families)),
-                    "notes": notes,
-                    "changed_files": [str(k) for k in changes],
-                }
-
-            self._emit(job, step="Decoding & scanning", progress=45, log=f"Decoding with {args.engine} engine...")
-            prepared = cli.prepare(
-                args, parts[0], work, args.engine,
-                apkeditor=apkeditor, recipe=loaded_recipe, notes=notes, bypass=bypass, apks=parts,
-            )
-            root, changes = prepared["root"], prepared["changes"]
-            candidates = sorted(set(cli.sinkhole_changes(
-                {}, root, extra=loaded_recipe.sinkhole_domains if loaded_recipe else None
-            )))
-            diff_lines = []
-            for line in patcher.diff(root, changes):
-                diff_lines.append(line.rstrip("\n"))
-                if len(diff_lines) >= MAX_DIFF_LINES:
-                    diff_lines.append("... (diff truncated for preview)")
-                    break
-            trackers = []
-            for name in sorted(set(prepared["hits"]) | set(prepared["evidence"])):
-                hit = prepared["hits"].get(name)
-                trackers.append({
-                    "name": name,
-                    "classes": hit.classes if hit else 0,
-                    "components": hit.components if hit else [],
-                    "hooks": [sig for _, sig in hit.hooks] if hit else [],
-                    "evidence": prepared["evidence"].get(name, []),
-                })
-            score = max(0, 100 - 4 * prepared["families"])
-            changed_rel = [p.relative_to(root).as_posix() for p in changes]
-
-            if mode in {"scan", "clean_preview"}:
-                diff_path = job["dir"] / "preview.diff"
-                diff_path.write_text("\n".join(diff_lines) + ("\n" if diff_lines else ""), encoding="utf-8")
-                self._register_artifact(job, diff_path, "Unified Diff", kind="diff")
-                manifest_p = None if bypass else (root / "AndroidManifest.xml")
-                if manifest_p and manifest_p.is_file():
-                    manifest_art = job["dir"] / "AndroidManifest.xml"
-                    shutil.copy2(manifest_p, manifest_art)
-                    self._register_artifact(job, manifest_art, "Decoded AndroidManifest.xml", kind="manifest")
-                job["summary"] = {"privacy_score": score, "changes_count": len(changed_rel), "verdict": prepared["safety"]["verdict"]}
-                return {
-                    "ok": True,
-                    "version": __version__,
-                    "privacy_score": score,
-                    "trackers": trackers,
-                    "safety": prepared["safety"],
-                    "detected_frameworks": detected,
-                    "engine": prepared["decoded"].engine,
-                    "decode_type": prepared["decoded"].decode_type,
-                    "notes": notes,
-                    "sinkhole": {"candidates": candidates, "endpoint": sinkhole.SINKHOLE},
-                    "changed_files": changed_rel,
-                    "diff_lines": diff_lines,
-                    "stats": prepared["stats"],
-                }
-
-            if not changes:
-                return {"ok": True, "noop": True, "notes": notes, "safety": prepared["safety"], "privacy_score": score}
-
-            out_ext = ".apks" if bundle else ".apk"
-            out = (
-                Path(payload["output"]).expanduser().resolve()
-                if payload.get("output")
-                else job["dir"] / f"{src.stem}-cleaned{out_ext}"
-            )
-            if out == src.resolve():
-                raise ValueError("Refusing to modify input APK in place")
-            out.parent.mkdir(parents=True, exist_ok=True)
-            report = out.parent / "privacy-report.md"
-            backup = out.with_suffix(".backups")
-            scratch_backup = work / "originals"
-
-            self._emit(job, step="Applying & rebuilding", progress=65, log="Applying patches and rebuilding...")
-            patcher.apply(root, changes, scratch_backup)
-            unsigned_apk = work / "unsigned.apk"
-            fallback = None
-            try:
-                cli.rebuild_with(args.engine, prepared["decoded"].engine, root, unsigned_apk,
-                                 apkeditor=apkeditor, original=parts[0] if bypass else None)
-            except engines.EngineError as error:
-                if not (args.engine == "auto" and apkeditor and engines.resource_failure(str(error))):
-                    raise
-                fallback = str(error).splitlines()[0][:200]
-                notes.append("Engine fallback: " + fallback)
-                self._emit(job, log="Apktool rebuild failed on resources; retrying with APKEditor...")
-                prepared = cli.prepare(
-                    args, parts[0], work, "apkeditor",
-                    apkeditor=apkeditor, recipe=loaded_recipe, notes=notes, bypass=bypass, apks=parts,
-                )
-                root, changes = prepared["root"], prepared["changes"]
-                if (
-                    not changes
-                ):
-                    return {
-                        "ok": True, "noop": True, "notes": notes,
-                        "safety": prepared["safety"], "privacy_score": score,
-                    }
-                shutil.rmtree(scratch_backup, ignore_errors=True)
-                patcher.apply(root, changes, scratch_backup)
-                cli.rebuild_with("apkeditor", "apkeditor", root, unsigned_apk,
-                                 apkeditor=apkeditor, original=parts[0] if bypass else None)
-                diff_lines = [line.rstrip("\n") for line in itertools.islice(patcher.diff(root, changes), MAX_DIFF_LINES)]
-
-            self._emit(job, step="Aligning & signing", progress=85, log="Running zipalign -P 16 and apksigner...")
-            signed = work / "signed.apk"
-            creds = signing.resolve_identity(keystore=args.keystore, ks_alias=args.ks_alias, ks_pass=args.ks_pass)
-            signing.sign(unsigned_apk, work, signed, creds)
-            if bundle:
-                signed = cli._pack_bundle(signed, parts, work, creds)
-            if backup.exists():
-                shutil.rmtree(backup)
-            shutil.copytree(scratch_backup, backup)
-            shutil.copyfile(signed, out)
-            if report.exists():
-                report.unlink()
-            cli.write_report(
-                report, src, sorted(set(prepared["hits"]) | set(prepared["evidence"])),
-                prepared["safety"], prepared["evidence"], changes, notes, detected,
-                prepared["decoded"].engine, fallback, args, prepared["stats"], "base APK",
-            )
-            diff_file = job["dir"] / "patch.diff"
-            diff_file.write_text("\n".join(diff_lines) + ("\n" if diff_lines else ""), encoding="utf-8")
-            if out.is_relative_to(job["dir"]):
-                self._register_artifact(job, out, "Cleaned APK", kind="apk")
-            if report.is_relative_to(job["dir"]):
-                self._register_artifact(job, report, "Privacy Report", kind="report")
-            self._register_artifact(job, diff_file, "Patch Diff", kind="diff")
-            out_size = out.stat().st_size
-            job["summary"] = {
-                "input_size": input_size,
-                "output_size": out_size,
-                "privacy_score_before": score,
-                "engine": prepared["decoded"].engine,
-                "sinkholed": len(prepared["stats"].get("sinkholed", [])),
-                "screenshots": prepared["stats"].get("screenshots", 0),
-            }
-            return {
-                "ok": True,
-                "output": str(out),
-                "report": str(report),
-                "engine": prepared["decoded"].engine,
-                "fallback": fallback,
-                "privacy_score": score,
-                "safety": prepared["safety"],
-                "trackers": trackers,
-                "stats": prepared["stats"],
-                "notes": notes,
-                "changed_files": changed_rel,
-            }
+        res = pipeline.run_scan_or_clean(
+            args,
+            src,
+            mode=mode,
+            loaded_recipe=loaded_recipe,
+            notes=notes,
+            default_output=default_output,
+            overwrite_existing=True,
+            on_event=_on_event,
+            preview_dir=job["dir"],
+            ops=cli,
+        )
+        artifacts = res.pop("artifacts", None) or {}
+        if mode in {"scan", "clean_preview"}:
+            if "diff" in artifacts:
+                self._register_artifact(job, artifacts["diff"], "Unified Diff", kind="diff")
+            if "manifest" in artifacts:
+                self._register_artifact(job, artifacts["manifest"], "Decoded AndroidManifest.xml", kind="manifest")
+        else:
+            if res.get("output"):
+                out_path = Path(res["output"])
+                if out_path.is_relative_to(job["dir"]):
+                    self._register_artifact(job, out_path, "Cleaned APK", kind="apk")
+            if res.get("report"):
+                report_path = Path(res["report"])
+                if report_path.is_relative_to(job["dir"]):
+                    self._register_artifact(job, report_path, "Privacy Report", kind="report")
+            if "diff" in artifacts:
+                self._register_artifact(job, artifacts["diff"], "Patch Diff", kind="diff")
+        if res.get("summary"):
+            job["summary"] = dict(res["summary"])
+        return res
 
 
 def _make_handler(manager, token, allowed_hosts_fn):
@@ -977,7 +939,7 @@ def _make_handler(manager, token, allowed_hosts_fn):
                                 break
                         batch = job["events"][cursor:]
                         cursor += len(batch)
-                        finished = job["status"] in {"done", "error"} and cursor >= len(job["events"])
+                        finished = job["status"] in {"done", "error", "cancelled"} and cursor >= len(job["events"])
                     if not batch and not finished:
                         self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
@@ -1032,6 +994,14 @@ def _make_handler(manager, token, allowed_hosts_fn):
                             "custom_domains": parsed.custom_sinkhole_domains,
                         },
                     })
+                    return
+                match_cancel = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/cancel", path)
+                if match_cancel:
+                    job = manager.cancel_job(match_cancel.group(1))
+                    if not job:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Job not found"})
+                        return
+                    self._send_json(HTTPStatus.OK, {"ok": True, "job": job})
                     return
                 if path == "/api/jobs":
                     job = manager.submit(payload.get("type", ""), payload)

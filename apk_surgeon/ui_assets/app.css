@@ -304,6 +304,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--cyan); }
 .btn-sm { padding: 5px 10px; font-size: 12px; border-radius: 6px; }
 .btn-primary { background: var(--emerald); color: #052e16; }
 .btn-primary:hover { background: #34d399; }
+.btn-danger { background: rgba(244, 63, 94, 0.16); color: #fecdd3; border-color: rgba(244, 63, 94, 0.45); }
+.btn-danger:hover { background: rgba(244, 63, 94, 0.28); }
 .btn-secondary { background: rgba(255, 255, 255, 0.06); color: var(--text); border-color: var(--border); }
 .btn-secondary:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--border-strong); }
 .btn-ghost { background: transparent; color: var(--text-muted); border-color: var(--border); }
@@ -417,6 +419,7 @@ td { font-family: var(--mono); font-size: 12px; }
 .progress-track { height: 5px; background: var(--bg-input); border-radius: 999px; overflow: hidden; margin-bottom: 10px; }
 .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--emerald), var(--cyan)); transition: width 180ms; }
 .progress-fill.is-error { background: linear-gradient(90deg, var(--rose), #fb7185); }
+.progress-fill.is-cancelled { background: linear-gradient(90deg, var(--amber), #fbbf24); }
 
 .log-stream {
   background: var(--bg-input);

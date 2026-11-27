@@ -10,18 +10,22 @@ from .signing import check_layout
 
 def verify(parts):
     apksigner = engines.resolve_executable("apksigner")
+    timeout = engines.effective_timeout()
     results = []
     for part in parts:
+        engines.check_cancelled("APK verification")
         row = {"apk": part.name, "errors": [], "certificates_sha256": [], "schemes": {}}
         sidecar = part.with_suffix(".apk.idsig")
         flags = ["--v4-signature-file", str(sidecar)] if sidecar.is_file() else []
         try:
             result = subprocess.run([apksigner, "verify", "--verbose", "--print-certs", *flags, str(part)],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError as error:
             raise ValueError(
                 "apksigner executable not found on PATH; install Android SDK build-tools and add it to PATH."
             ) from error
+        except subprocess.TimeoutExpired as error:
+            raise ValueError(f"apksigner verify timed out after {timeout:.0f}s.") from error
         for scheme, value in re.findall(r"Verified using (v[\d.]+) scheme[^:\n]*:\s*(true|false)", result.stdout):
             row["schemes"][scheme] = value == "true"
         for scheme in ("v1", "v2", "v3", "v4"):

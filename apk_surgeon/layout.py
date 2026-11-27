@@ -72,6 +72,9 @@ def res_dir(root):
     direct = root / "res"
     if direct.is_dir():
         return direct
+    for candidate in sorted(root.glob("resources/*/res")):
+        if candidate.is_dir():
+            return candidate
     for candidate in sorted(root.glob("*/res")):
         if candidate.is_dir():
             return candidate

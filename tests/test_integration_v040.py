@@ -25,7 +25,11 @@ NEEDS_APKEDITOR = pytest.mark.skipif(
 
 
 def run(*args, check=True):
-    result = subprocess.run([str(arg) for arg in args], text=True, capture_output=True)
+    argv = [str(arg) for arg in args]
+    resolved = shutil.which(argv[0])
+    if resolved:
+        argv[0] = resolved
+    result = subprocess.run(argv, text=True, capture_output=True)
     if check and result.returncode:
         sys.stderr.write(result.stdout + "\n" + result.stderr)
         result.check_returncode()
@@ -99,6 +103,7 @@ def copy_with(apk, dest, members):
 @pytest.fixture
 def fixture(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     return build_apk(tmp_path)
 
 
@@ -116,12 +121,13 @@ def test_scan_reports_engine_frameworks_sinkhole_and_verdict(tmp_path, fixture):
 @NEEDS_APKEDITOR
 def test_clean_with_apkeditor_and_sinkhole(tmp_path, fixture):
     out = tmp_path / "out" / "clean.apk"
-    cli("clean", fixture, "-o", out, "--engine", "apkeditor", "--sinkhole", "--yes")
+    cli("clean", fixture, "-o", out, "--engine", "apkeditor", "--sinkhole", "--trust-user-ca", "--yes")
     verified = json.loads(cli("verify", out, "--json").stdout)
     assert verified["ok"], verified
     report = (out.parent / "privacy-report.md").read_text()
     assert "Engine: apkeditor" in report
     assert "Sinkholed URLs: 1" in report
+    assert "Opt-in patch: User CA trust" in report
     with zipfile.ZipFile(out) as archive:
         assert b"127.0.0.1" in archive.read("classes.dex")
         assert "META-INF/CERT.SF" not in archive.namelist()
@@ -131,6 +137,7 @@ def test_clean_with_apkeditor_and_sinkhole(tmp_path, fixture):
 @NEEDS_APKEDITOR
 def test_merge_splits_into_standalone_apk(tmp_path, fixture, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     split = build_apk(tmp_path / "build", split=True)
     bundle = tmp_path / "bundle.xapk"
     with zipfile.ZipFile(bundle, "w") as archive:
