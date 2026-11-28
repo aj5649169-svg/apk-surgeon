@@ -27,7 +27,7 @@ def test_multidex_and_exact_patch(tmp_path):
     source.write_text(SOURCE)
     hits = scan(tmp_path)
     assert set(hits) == {"Google Measurement", "Firebase Analytics"}
-    assert len(RULES) == 25
+    assert len(RULES) == 39
     changes = plan(tmp_path, hits)
     assert ".locals 1\n    return-void\n    const/4" in changes[source]
     backup = tmp_path / "backup"

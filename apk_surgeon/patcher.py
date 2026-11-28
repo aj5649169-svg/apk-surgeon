@@ -6,7 +6,15 @@ from collections import defaultdict
 from lxml import etree
 
 from . import layout
-from .scanner import ANDROID, METHOD, RULES, components, ensure_android_namespace, parse_manifest
+from .scanner import (
+    ANDROID,
+    METHOD,
+    RULES,
+    components,
+    ensure_android_namespace,
+    parse_manifest,
+    startup_initializers,
+)
 
 
 def patch_smali(text, signatures):
@@ -43,6 +51,7 @@ PROVIDERS = {
     "com.facebook.internal.FacebookInitProvider",
     *(provider for rule in RULES for provider in rule.get("providers", [])),
 }
+INITIALIZERS = PROVIDERS | {init for rule in RULES for init in rule.get("initializers", [])}
 AD_PERMISSIONS = {
     "com.google.android.gms.permission.AD_ID",
     "android.permission.ACCESS_ADSERVICES_AD_ID",
@@ -56,14 +65,18 @@ def plan(root, hits, strip_ad_permissions=False, disable_providers=False, *, man
         path = layout.manifest(root)
         tree = parse_manifest(path)
         allowed = {component for rule in RULES for component in rule["disable"]}
-        if recipe:
-            allowed.update(recipe.disable_components)
+        recipe_components = set(recipe.disable_components) if recipe else set()
+        allowed.update(recipe_components)
         changed = False
         for node, name in components(tree):
             selected = name in allowed and node.tag in ("receiver", "service")
             selected |= disable_providers and node.tag == "provider" and name in PROVIDERS
             if selected and node.get(ANDROID + "enabled") != "false":
                 node.set(ANDROID + "enabled", "false")
+                changed = True
+        for meta, name in startup_initializers(tree):
+            if (disable_providers and name in INITIALIZERS) or (name in recipe_components):
+                meta.getparent().remove(meta)
                 changed = True
         if strip_ad_permissions:
             for permission in tree.xpath("/manifest/uses-permission | /manifest/uses-permission-sdk-23"):

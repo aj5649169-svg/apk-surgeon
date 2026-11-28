@@ -9,6 +9,7 @@
     targetSize: 0,
     activeJobId: null,
     activeEventSource: null,
+    activeUploadXhr: null,
     timerHandle: null,
     jobStartMs: 0,
     lastDiffText: "",
@@ -132,6 +133,12 @@
       if (document.getElementById("opt-custom-domains").checked) parts.push("--allow-custom-domains");
       if (document.getElementById("opt-force-unsafe").checked) parts.push("--force-unsafe");
       if (document.getElementById("recipe-yaml").value.trim()) parts.push("--recipe", "recipe.yml");
+      const cleanDb = document.getElementById("clean-tracker-db")?.value?.trim();
+      if (cleanDb) parts.push("--tracker-db", cleanDb);
+      const cleanKs = document.getElementById("clean-keystore")?.value?.trim();
+      if (cleanKs) parts.push("--keystore", cleanKs);
+      const cleanAlias = document.getElementById("clean-ks-alias")?.value?.trim();
+      if (cleanAlias) parts.push("--ks-alias", cleanAlias);
       if (jar) parts.push("--apkeditor-jar", jar);
       cmd = parts.join(" ");
     } else if (state.activeTab === "decode") {
@@ -330,6 +337,9 @@
     if (data.sinkhole?.candidates?.length) {
       trackers.appendChild(el("div", { className: "small muted" }, `Sinkhole targets (${data.sinkhole.candidates.length}): ${data.sinkhole.candidates.join(", ")}`));
     }
+    if (data.exodus?.length) {
+      trackers.appendChild(el("div", { className: "small muted" }, `Exodus DB matches (${data.exodus.length}): ${data.exodus.join(", ")}`));
+    }
     state.lastDiffText = (data.diff_lines || []).join("\n");
     renderDiffLines(document.getElementById("preview-diff"), data.diff_lines);
   }
@@ -364,18 +374,60 @@
     }
   }
 
+  let decodedPage = 1;
+  let decodedSearch = "";
+  let decodedTotalPages = 1;
+  let decodedFetchSeq = 0;
+
   async function loadDecodedBrowser(jobId, rootPath) {
     state.lastDecodedJobId = jobId;
     state.lastDecodedRoot = rootPath;
     document.getElementById("decoded-browser").hidden = false;
     document.getElementById("decoded-root-label").textContent = rootPath;
+    decodedPage = 1;
+    decodedSearch = "";
+    const searchEl = document.getElementById("decoded-search");
+    if (searchEl) searchEl.value = "";
+    const pathEl = document.getElementById("decoded-file-path");
+    const sizeEl = document.getElementById("decoded-file-size");
+    const contentEl = document.getElementById("decoded-file-content");
+    if (pathEl) pathEl.textContent = "No file selected";
+    if (sizeEl) sizeEl.textContent = "";
+    if (contentEl) {
+      contentEl.className = "code-viewer";
+      contentEl.textContent = "Select a file on the left to inspect its contents safely.";
+    }
+    await fetchDecodedFiles(jobId);
+  }
+
+  async function fetchDecodedFiles(jobId) {
+    const seq = ++decodedFetchSeq;
+    const params = new URLSearchParams({ page: String(decodedPage), per_page: "100" });
+    if (decodedSearch) params.set("q", decodedSearch);
+    const data = await apiJson(`/api/jobs/${encodeURIComponent(jobId)}/files?${params}`);
+    if (seq !== decodedFetchSeq || state.lastDecodedJobId !== jobId) return;
     const listBox = document.getElementById("decoded-file-list");
     clear(listBox);
-    const data = await apiJson(`/api/jobs/${encodeURIComponent(jobId)}/files`);
+    decodedTotalPages = data.total_pages || 1;
+    const curPage = data.page || 1;
+    const pageInfo = document.getElementById("decoded-page-info");
+    if (pageInfo) pageInfo.textContent = `Page ${curPage}/${decodedTotalPages} (${data.total ?? data.files.length} files)`;
+    const prevBtn = document.getElementById("btn-decoded-prev");
+    const nextBtn = document.getElementById("btn-decoded-next");
+    if (prevBtn) prevBtn.disabled = curPage <= 1;
+    if (nextBtn) nextBtn.disabled = curPage >= decodedTotalPages;
+    if (!data.files.length) {
+      listBox.appendChild(el("div", { className: "muted small" }, decodedSearch ? `No files match "${decodedSearch}".` : "No files in decoded workspace."));
+      return;
+    }
     for (const rel of data.files) {
+      const slash = rel.lastIndexOf("/");
+      const baseName = slash >= 0 ? rel.slice(slash + 1) : rel;
+      const dirHint = slash >= 0 ? rel.slice(0, slash) : "";
       const btn = el("button", {
         type: "button",
         className: "file-btn",
+        title: rel,
         onClick: async () => {
           listBox.querySelectorAll(".file-btn").forEach((n) => n.classList.remove("is-selected"));
           btn.classList.add("is-selected");
@@ -383,12 +435,22 @@
             const fileData = await apiJson(
               `/api/workspace-file?job_id=${encodeURIComponent(jobId)}&path=${encodeURIComponent(rel)}`
             );
-            document.getElementById("decoded-file-content").textContent = fileData.content;
+            const pathLabel = document.getElementById("decoded-file-path");
+            if (pathLabel) pathLabel.textContent = fileData.path || rel;
+            const sizeLabel = document.getElementById("decoded-file-size");
+            if (sizeLabel) {
+              const trunc = fileData.truncated ? " (truncated)" : "";
+              sizeLabel.textContent = `${fmtBytes(fileData.size)} • ${fileData.mode || "text"}${trunc}`;
+            }
+            const contentEl = document.getElementById("decoded-file-content");
+            contentEl.textContent = fileData.content;
+            contentEl.className = fileData.mode === "hex" ? "code-viewer hex-view" : "code-viewer";
           } catch (err) {
             showError("Could not load file", err.message);
           }
         },
-      }, rel);
+      }, baseName);
+      if (dirHint) btn.appendChild(el("span", { className: "file-path-hint" }, dirHint));
       listBox.appendChild(btn);
     }
   }
@@ -598,40 +660,86 @@
     });
   }
 
-  async function uploadFile(file) {
-    if (!file) return;
+  function uploadFile(file) {
+    if (!file) return Promise.resolve();
     clearError();
+    if (state.activeUploadXhr) {
+      state.activeUploadXhr.abort();
+      state.activeUploadXhr = null;
+    }
     const nameNode = document.getElementById("active-target-name");
     const metaNode = document.getElementById("active-target-meta");
     const prevName = nameNode.textContent;
     const prevMeta = metaNode.textContent;
+    const progressRow = document.getElementById("upload-progress-row");
+    const progressTrack = document.getElementById("upload-progress-track");
+    const progressFill = document.getElementById("upload-progress-fill");
     nameNode.textContent = `Uploading ${file.name}...`;
     metaNode.textContent = `${fmtBytes(file.size)} — uploading to temporary UI workspace...`;
-    try {
-      const resp = await fetch("/api/upload", {
-        method: "POST",
-        headers: {
-          "X-APK-Surgeon-Token": TOKEN,
-          "X-Filename": file.name,
-          "Content-Type": "application/octet-stream",
-        },
-        body: file,
-      });
-      const data = await resp.json().catch(() => ({ ok: false, error: `HTTP ${resp.status}` }));
-      if (!resp.ok || !data.ok) throw new Error(data.error || "Upload failed");
-      state.uploadId = data.upload_id;
-      state.targetLabel = data.filename;
-      state.targetSize = data.size;
-      document.getElementById("local-path-input").value = "";
-      nameNode.textContent = data.filename;
-      metaNode.textContent = `Uploaded (${fmtBytes(data.size)})`;
-      updateCliPreview();
-    } catch (err) {
-      nameNode.textContent = prevName;
-      metaNode.textContent = prevMeta;
-      throw err;
-    }
-    await runQuickInspect();
+    if (progressRow) progressRow.hidden = false;
+    if (progressTrack) progressTrack.setAttribute("aria-valuenow", "0");
+    if (progressFill) progressFill.style.width = "0%";
+    const safeHdrName = file.name.replace(/[^\x20-\x7e]/g, "_") || "upload.apk";
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      state.activeUploadXhr = xhr;
+      const cleanup = () => {
+        if (state.activeUploadXhr === xhr) state.activeUploadXhr = null;
+        if (progressRow) progressRow.hidden = true;
+      };
+      xhr.open("POST", "/api/upload");
+      xhr.setRequestHeader("X-APK-Surgeon-Token", TOKEN);
+      xhr.setRequestHeader("X-Filename", safeHdrName);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.upload.onprogress = (ev) => {
+        if (!ev.lengthComputable || !ev.total) return;
+        const pct = Math.min(100, Math.round((ev.loaded / ev.total) * 100));
+        if (progressFill) progressFill.style.width = `${pct}%`;
+        if (progressTrack) progressTrack.setAttribute("aria-valuenow", String(pct));
+        metaNode.textContent = pct >= 100
+          ? `Uploaded (${fmtBytes(ev.total)}) — finalizing...`
+          : `Uploading... ${pct}% (${fmtBytes(ev.loaded)} / ${fmtBytes(ev.total)})`;
+      };
+      xhr.onload = async () => {
+        cleanup();
+        let data;
+        try {
+          data = JSON.parse(xhr.responseText || "{}");
+        } catch {
+          data = { ok: false, error: `HTTP ${xhr.status}` };
+        }
+        if (xhr.status >= 400 || !data.ok) {
+          nameNode.textContent = prevName;
+          metaNode.textContent = prevMeta;
+          reject(new Error(data.error || "Upload failed"));
+          return;
+        }
+        state.uploadId = data.upload_id;
+        state.targetLabel = data.filename;
+        state.targetSize = data.size;
+        document.getElementById("local-path-input").value = "";
+        nameNode.textContent = data.filename;
+        metaNode.textContent = `Uploaded (${fmtBytes(data.size)})`;
+        updateCliPreview();
+        await runQuickInspect();
+        resolve();
+      };
+      xhr.onerror = () => {
+        cleanup();
+        nameNode.textContent = prevName;
+        metaNode.textContent = prevMeta;
+        reject(new Error("Upload failed due to a network error"));
+      };
+      xhr.onabort = () => {
+        cleanup();
+        nameNode.textContent = prevName;
+        metaNode.textContent = prevMeta;
+        showToast("Upload cancelled");
+        resolve();
+      };
+      xhr.send(file);
+    });
   }
 
   async function runQuickInspect() {
@@ -750,6 +858,10 @@
       allow_custom_domains: document.getElementById("opt-custom-domains").checked,
       force_unsafe: document.getElementById("opt-force-unsafe").checked,
       recipe_yaml: document.getElementById("recipe-yaml").value,
+      tracker_db: document.getElementById("clean-tracker-db")?.value?.trim() || null,
+      keystore: document.getElementById("clean-keystore")?.value?.trim() || null,
+      ks_alias: document.getElementById("clean-ks-alias")?.value?.trim() || null,
+      ks_pass: document.getElementById("clean-ks-pass")?.value || null,
     };
   }
 
@@ -772,7 +884,11 @@
   });
   picker.addEventListener("change", () => {
     const file = picker.files?.[0];
+    picker.value = "";
     if (file) uploadFile(file).catch((err) => showError("Upload failed", err.message, { logToConsole: true }));
+  });
+  document.getElementById("btn-cancel-upload")?.addEventListener("click", () => {
+    state.activeUploadXhr?.abort();
   });
 
   document.getElementById("btn-dismiss-error").addEventListener("click", clearError);
@@ -840,6 +956,29 @@
     startJob("decode", payload, (job) => {
       loadDecodedBrowser(job.id, job.result.output).catch((err) => showError("Decoded file browser failed", err.message));
     });
+  });
+  let decodedSearchTimer = null;
+  document.getElementById("decoded-search")?.addEventListener("input", (e) => {
+    clearTimeout(decodedSearchTimer);
+    decodedSearchTimer = setTimeout(() => {
+      decodedSearch = e.target.value.trim();
+      decodedPage = 1;
+      if (state.lastDecodedJobId) {
+        fetchDecodedFiles(state.lastDecodedJobId).catch((err) => showError("File search failed", err.message));
+      }
+    }, 250);
+  });
+  document.getElementById("btn-decoded-prev")?.addEventListener("click", () => {
+    if (decodedPage > 1 && state.lastDecodedJobId) {
+      decodedPage -= 1;
+      fetchDecodedFiles(state.lastDecodedJobId).catch((err) => showError("Pagination failed", err.message));
+    }
+  });
+  document.getElementById("btn-decoded-next")?.addEventListener("click", () => {
+    if (decodedPage < decodedTotalPages && state.lastDecodedJobId) {
+      decodedPage += 1;
+      fetchDecodedFiles(state.lastDecodedJobId).catch((err) => showError("Pagination failed", err.message));
+    }
   });
   document.getElementById("btn-send-to-build").addEventListener("click", () => {
     if (state.lastDecodedRoot) document.getElementById("build-dir").value = state.lastDecodedRoot;

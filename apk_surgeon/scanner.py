@@ -31,16 +31,40 @@ def ensure_android_namespace(root):
     return rebuilt
 
 
+STARTUP_PROVIDER = "androidx.startup.InitializationProvider"
+STARTUP_VALUES = frozenset({"androidx.startup", "@string/androidx_startup"})
+
+
+def _resolve_component(package, name):
+    if name.startswith("."):
+        return package + name
+    if "." not in name:
+        return package + "." + name
+    return name
+
+
 def components(tree):
     package = tree.getroot().get("package", "")
     for node in tree.xpath("/manifest/application/*"):
         name = node.get(ANDROID + "name", "")
         if node.tag in ("receiver", "service", "provider") and name:
-            if name.startswith("."):
-                name = package + name
-            elif "." not in name:
-                name = package + "." + name
-            yield node, name
+            yield node, _resolve_component(package, name)
+
+
+def startup_initializers(tree):
+    """Yield ``(meta_node, class_name)`` registered under AndroidX ``InitializationProvider``."""
+    if tree is None:
+        return
+    package = tree.getroot().get("package", "")
+    for node in tree.xpath("/manifest/application/provider"):
+        pname = node.get(ANDROID + "name", "")
+        if not pname or _resolve_component(package, pname) != STARTUP_PROVIDER:
+            continue
+        for meta in node.findall("meta-data"):
+            mname = meta.get(ANDROID + "name", "")
+            mval = meta.get(ANDROID + "value")
+            if mname and (mval is None or mval in STARTUP_VALUES):
+                yield meta, _resolve_component(package, mname)
 
 
 @dataclass
@@ -68,14 +92,27 @@ def rules(recipe=None):
     return merged
 
 
+def _rule_matches_component(rule, name):
+    return (
+        name.startswith(rule["prefix"] + ".")
+        or name in rule.get("providers", ())
+        or name in rule.get("initializers", ())
+    )
+
+
 def scan(root, *, manifest=True, recipe=None):
     effective = rules(recipe)
     hits = {rule["name"]: Hit() for rule in effective}
     tree = parse_manifest(layout.manifest(root)) if manifest and layout.manifest(root) else None
-    for node, name in (components(tree) if tree is not None else ()):
-        for rule in effective:
-            if name.startswith(rule["prefix"] + ".") or name in rule.get("providers", []):
-                hits[rule["name"]].components.append(f"{node.tag}: {name}")
+    if tree is not None:
+        for node, name in components(tree):
+            for rule in effective:
+                if _rule_matches_component(rule, name):
+                    hits[rule["name"]].components.append(f"{node.tag}: {name}")
+        for _, name in startup_initializers(tree):
+            for rule in effective:
+                if _rule_matches_component(rule, name):
+                    hits[rule["name"]].components.append(f"startup: {name}")
     for path in layout.smali_files(root):
         text = path.read_text(encoding="utf-8")
         cls = CLASS.search(text)
@@ -97,10 +134,22 @@ def scan(root, *, manifest=True, recipe=None):
 
 def exodus(root, database):
     """Match local, trusted Exodus code/network expressions against static evidence."""
-    rows = json.loads(database.read_text(encoding="utf-8"))["trackers"]
-    rules_ = [(row["name"], re.compile(row["code_signature"]) if row.get("code_signature") else None,
-               re.compile(row["network_signature"], re.I) if row.get("network_signature") else None)
-              for row in (rows.values() if isinstance(rows, dict) else rows)]
+    try:
+        payload = json.loads(database.read_text(encoding="utf-8"))
+        rows = payload["trackers"]
+        if not isinstance(rows, (dict, list)):
+            raise TypeError("'trackers' must be an object or array")
+        items = rows.values() if isinstance(rows, dict) else rows
+        rules_ = [
+            (
+                str(row["name"]),
+                re.compile(row["code_signature"]) if row.get("code_signature") else None,
+                re.compile(row["network_signature"], re.I) if row.get("network_signature") else None,
+            )
+            for row in items
+        ]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, AttributeError, re.error) as error:
+        raise ValueError(f"Invalid Exodus tracker DB {database}: {error}") from error
     found = set()
     for path in layout.smali_files(root):
         text = path.read_text(encoding="utf-8")
