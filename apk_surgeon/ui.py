@@ -1,9 +1,11 @@
 """Pure-Python local WebUI server and job runner for APK Surgeon."""
 
+import codecs
 import hmac
 import ipaddress
 import json
 import mimetypes
+import os
 import re
 import secrets
 import shutil
@@ -32,6 +34,7 @@ UPLOAD_EXTENSIONS = {".apk", ".apks", ".xapk", ".apkm"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 MAX_PREVIEW_BYTES = 2 * 1024 * 1024
+HEX_PREVIEW_BYTES = 4096
 MAX_LOG_LINES = 400
 INLINE_TEXT_SUFFIXES = {".md", ".txt", ".xml", ".diff", ".json", ".yml", ".yaml", ".smali"}
 
@@ -184,7 +187,7 @@ def _clean_args_from_payload(payload, *, work_dir, recipe_path=None):
         ks_alias=payload.get("ks_alias") or None,
         ks_pass=payload.get("ks_pass") or None,
         recipe=recipe_path,
-        tracker_db=None,
+        tracker_db=Path(str(payload["tracker_db"])).expanduser() if payload.get("tracker_db") else None,
         yes=True,
         ai=False,
         ai_patch=False,
@@ -653,6 +656,10 @@ class JobManager:
             recipe_file.write_text(payload["recipe_yaml"], encoding="utf-8")
             loaded_recipe.path = recipe_file
         args = _clean_args_from_payload(payload, work_dir=job["dir"], recipe_path=recipe_file)
+        if args.tracker_db is not None:
+            args.tracker_db = args.tracker_db.resolve(strict=True)
+            if not args.tracker_db.is_file():
+                raise ValueError(f"Tracker database is not a file: {args.tracker_db}")
         if payload.get("output"):
             args.output = Path(payload["output"])
         notes = []
@@ -705,6 +712,30 @@ class JobManager:
         if res.get("summary"):
             job["summary"] = dict(res["summary"])
         return res
+
+
+def _parse_int_param(query, name, *, default, minimum, maximum):
+    raw = (query.get(name) or [str(default)])[0]
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ValueError(f"Query parameter {name!r} must be an integer") from error
+    return max(minimum, min(maximum, value))
+
+
+def _format_hex_preview(raw, file_size):
+    limit = min(len(raw), HEX_PREVIEW_BYTES)
+    lines = []
+    for offset in range(0, limit, 16):
+        chunk = raw[offset:offset + 16]
+        hex_part = " ".join(f"{byte:02x}" for byte in chunk)
+        ascii_part = "".join(chr(byte) if 32 <= byte < 127 else "." for byte in chunk)
+        lines.append(f"{offset:08x}  {hex_part:<48s}  {ascii_part}")
+    text = "\n".join(lines)
+    truncated = file_size > HEX_PREVIEW_BYTES
+    if truncated:
+        text += f"\n... ({file_size - limit} more bytes)"
+    return text, truncated
 
 
 def _make_handler(manager, token, allowed_hosts_fn):
@@ -822,7 +853,7 @@ def _make_handler(manager, token, allowed_hosts_fn):
                     return
                 match_files = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/files", path)
                 if match_files:
-                    self._handle_job_files(match_files.group(1))
+                    self._handle_job_files(match_files.group(1), parse_qs(parsed.query))
                     return
                 match_art = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)/artifacts/([^/]+)", path)
                 if match_art:
@@ -866,34 +897,77 @@ def _make_handler(manager, token, allowed_hosts_fn):
             if not target.is_file():
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "File not found"})
                 return
-            data = target.read_bytes()[:MAX_PREVIEW_BYTES]
-            self._send_json(HTTPStatus.OK, {"ok": True, "path": rel, "content": data.decode("utf-8", errors="replace")})
+            file_size = target.stat().st_size
+            with target.open("rb") as stream:
+                raw = stream.read(MAX_PREVIEW_BYTES)
+            is_binary = b"\x00" in raw[:8192]
+            content = None
+            if not is_binary:
+                try:
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+                    content = decoder.decode(raw, final=(file_size <= MAX_PREVIEW_BYTES))
+                except UnicodeDecodeError:
+                    is_binary = True
+            if is_binary:
+                content, truncated = _format_hex_preview(raw, file_size)
+                mode = "hex"
+            else:
+                truncated = file_size > MAX_PREVIEW_BYTES
+                mode = "text"
+            self._send_json(HTTPStatus.OK, {
+                "ok": True,
+                "path": rel,
+                "content": content,
+                "mode": mode,
+                "size": file_size,
+                "truncated": truncated,
+            })
 
-        def _handle_job_files(self, job_id):
+        def _handle_job_files(self, job_id, query=None):
             job = manager.get_job(job_id)
             if not job or not job["decoded_dir"]:
                 self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Decoded workspace not found"})
                 return
+            query = query or {}
+            search = (query.get("q") or [""])[0].strip().lower()
+            page = _parse_int_param(query, "page", default=1, minimum=1, maximum=100000)
+            per_page = _parse_int_param(query, "per_page", default=100, minimum=1, maximum=500)
             root = job["decoded_dir"].resolve()
-            interesting = []
-            priority = [root / "AndroidManifest.xml", root / "apktool.yml", root / "archive-info.json"]
+            matched = []
             seen = set()
-            for item in priority:
-                if item.is_file():
-                    rel_item = item.relative_to(root).as_posix()
-                    interesting.append(rel_item)
-                    seen.add(rel_item)
-            for p in sorted(root.rglob("*")):
-                if not p.is_file():
-                    continue
-                if p.suffix.lower() in {".xml", ".yml", ".json", ".smali", ".txt"}:
-                    rel_p = p.relative_to(root).as_posix()
-                    if rel_p not in seen:
-                        interesting.append(rel_p)
-                        seen.add(rel_p)
-                    if len(interesting) >= 300:
-                        break
-            self._send_json(HTTPStatus.OK, {"ok": True, "files": interesting})
+            for name in ("AndroidManifest.xml", "apktool.yml", "archive-info.json"):
+                item = root / name
+                resolved = item.resolve()
+                if resolved.is_relative_to(root) and item.is_file():
+                    seen.add(name)
+                    if not search or search in name.lower():
+                        matched.append(name)
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                dirnames.sort()
+                filenames.sort()
+                rel_dir = Path(dirpath).relative_to(root)
+                for fname in filenames:
+                    full = os.path.join(dirpath, fname)
+                    if os.path.islink(full) and not Path(full).resolve().is_relative_to(root):
+                        continue
+                    rel_p = (rel_dir / fname).as_posix() if rel_dir != Path(".") else fname
+                    if rel_p in seen:
+                        continue
+                    seen.add(rel_p)
+                    if not search or search in rel_p.lower():
+                        matched.append(rel_p)
+            total = len(matched)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            start = (page - 1) * per_page
+            page_files = matched[start:start + per_page]
+            self._send_json(HTTPStatus.OK, {
+                "ok": True,
+                "files": page_files,
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": total_pages,
+            })
 
         def _handle_artifact(self, job_id, artifact_id, *, inline=False):
             job = manager.get_job(job_id)

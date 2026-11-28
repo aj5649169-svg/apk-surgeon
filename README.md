@@ -2,11 +2,14 @@
 
 Find known Android tracking SDKs, review an exact patch, and build a locally signed copy. Use it for personal privacy audits on APKs you own or have authorization to modify. Check licensing and distribution permissions before sharing modified software.
 
-`v0.5.0` adds a full raw APK toolkit (`decode`, `build`, `merge`, `sign`,
-`inspect`) alongside the v0.4.0 privacy audit engine (APKEditor fallback,
-selective multi-DEX patching, telemetry URL sinkholing, native-framework and
-Pairip detection, split-bundle merging, DEX 041 container scanning, and
-opt-in power-user audit patches).
+`v0.6.0` expands tracker & sinkhole coverage across 39 SDK families with
+AndroidX App Startup `<meta-data>` handling, paginated/searchable WebUI file
+browsing (including binary hex preview), XHR upload progress, and WebUI
+Privacy Studio inputs for `--tracker-db` and custom keystores alongside the
+v0.5 raw APK toolkit (`decode`, `build`, `merge`, `sign`, `inspect`),
+streaming raw ZIP repack, ELF 16 KiB `PT_LOAD` checks, DEX 041 container
+scanning, APKEditor fallback, selective multi-DEX patching, telemetry URL
+sinkholing, Pairip detection, and opt-in audit patches.
 
 ## Quick start
 

@@ -214,6 +214,11 @@ def _check_output_file(output, *, input_path=None, force=False):
     return output
 
 
+def _ignore_symlinks(directory, names):
+    """Never dereference or copy symlinks out of staging trees."""
+    return [name for name in names if (Path(directory) / name).is_symlink()]
+
+
 def _check_output_dir(output, *, force=False):
     output = Path(output).resolve()
     if output.exists():
@@ -261,7 +266,7 @@ def decode_apk(apk, output, *, engine="auto", apkeditor_jar=None, no_res=False, 
                 notes.extend(result.notes)
         if out.exists() and force:
             shutil.rmtree(out)
-        shutil.copytree(result.root, out)
+        shutil.copytree(result.root, out, ignore=_ignore_symlinks)
     return {
         "ok": True,
         "apk": str(apk),

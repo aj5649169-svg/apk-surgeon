@@ -214,6 +214,132 @@
     "prefix": "com.posthog.android",
     "hooks": [],
     "disable": [],
+    "coverage": "detection-only",
+    "initializers": [
+      "com.posthog.android.PostHogInitializer"
+    ]
+  },
+  {
+    "name": "CleverTap",
+    "prefix": "com.clevertap.android",
+    "hooks": [
+      "Lcom/clevertap/android/sdk/CleverTapAPI;->pushEvent(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method",
+    "providers": [
+      "com.clevertap.android.sdk.CleverTapProvider"
+    ]
+  },
+  {
+    "name": "Segment",
+    "prefix": "com.segment.analytics",
+    "hooks": [
+      "Lcom/segment/analytics/Analytics;->track(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Braze",
+    "prefix": "com.braze",
+    "hooks": [
+      "Lcom/braze/Braze;->logCustomEvent(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Leanplum",
+    "prefix": "com.leanplum",
+    "hooks": [
+      "Lcom/leanplum/Leanplum;->track(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Localytics",
+    "prefix": "com.localytics.android",
+    "hooks": [
+      "Lcom/localytics/android/Localytics;->tagEvent(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Singular",
+    "prefix": "com.singular.sdk",
+    "hooks": [
+      "Lcom/singular/sdk/Singular;->event(Ljava/lang/String;)Z",
+      "Lcom/singular/sdk/Singular;->event(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Tealium",
+    "prefix": "com.tealium",
+    "hooks": [],
+    "disable": [],
+    "coverage": "detection-only"
+  },
+  {
+    "name": "Countly",
+    "prefix": "ly.count.android",
+    "hooks": [
+      "Lly/count/android/sdk/Countly;->recordEvent(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Heap",
+    "prefix": "com.heapanalytics",
+    "hooks": [
+      "Lcom/heapanalytics/android/Heap;->track(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Amplitude",
+    "prefix": "com.amplitude.android",
+    "hooks": [],
+    "disable": [],
+    "coverage": "detection-only"
+  },
+  {
+    "name": "Microsoft App Center Analytics",
+    "prefix": "com.microsoft.appcenter.analytics",
+    "hooks": [
+      "Lcom/microsoft/appcenter/analytics/Analytics;->trackEvent(Ljava/lang/String;)V"
+    ],
+    "disable": [],
+    "coverage": "exact-method"
+  },
+  {
+    "name": "Firebase Performance",
+    "prefix": "com.google.firebase.perf",
+    "hooks": [],
+    "disable": [],
+    "coverage": "detection-only",
+    "providers": [
+      "com.google.firebase.perf.provider.FirebasePerfProvider"
+    ]
+  },
+  {
+    "name": "Firebase Remote Config",
+    "prefix": "com.google.firebase.remoteconfig",
+    "hooks": [],
+    "disable": [],
+    "coverage": "detection-only"
+  },
+  {
+    "name": "Firebase In-App Messaging",
+    "prefix": "com.google.firebase.inappmessaging",
+    "hooks": [],
+    "disable": [],
     "coverage": "detection-only"
   }
 ]

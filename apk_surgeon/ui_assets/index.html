@@ -17,7 +17,7 @@
         </svg>
       </div>
       <div>
-        <div class="brand-title">APK Surgeon <span id="app-version" class="version-pill">v0.5.1</span></div>
+        <div class="brand-title">APK Surgeon <span id="app-version" class="version-pill">v0.6.0</span></div>
         <div class="brand-sub">Surgical Privacy &amp; Raw APK Workbench</div>
       </div>
     </div>
@@ -73,6 +73,13 @@
             <span id="active-target-meta" class="muted">or click to upload (zero copy overhead for large files via local path below)</span>
           </div>
           <button id="btn-browse" type="button" class="btn btn-secondary btn-sm">Choose File</button>
+        </div>
+
+        <div id="upload-progress-row" class="upload-progress-row" hidden>
+          <div id="upload-progress-track" class="upload-progress-track" role="progressbar" aria-label="APK upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="upload-progress-fill" class="upload-progress-fill"></div>
+          </div>
+          <button id="btn-cancel-upload" type="button" class="btn btn-danger btn-sm">Cancel</button>
         </div>
 
         <div class="target-inputs">
@@ -272,6 +279,30 @@
           <div id="recipe-feedback" class="muted small"></div>
         </div>
 
+        <details class="card">
+          <summary>External Tracker DB &amp; Custom Keystore Options (optional)</summary>
+          <div class="two-col top-gap">
+            <label class="field">
+              <span>Exodus / Tracker DB JSON Path (--tracker-db)</span>
+              <input id="clean-tracker-db" type="text" placeholder="/path/to/exodus-trackers.json">
+            </label>
+            <label class="field">
+              <span>Custom Keystore Path (--keystore)</span>
+              <input id="clean-keystore" type="text" placeholder="Leave blank for ~/.apk-surgeon/keystore.jks">
+            </label>
+          </div>
+          <div class="two-col top-gap">
+            <label class="field">
+              <span>Key Alias (--ks-alias)</span>
+              <input id="clean-ks-alias" type="text" placeholder="surgeon">
+            </label>
+            <label class="field">
+              <span>Keystore Password (--ks-pass)</span>
+              <input id="clean-ks-pass" type="password" placeholder="APK_SURGEON_KS_PASS">
+            </label>
+          </div>
+        </details>
+
         <div id="clean-preview-box" class="stack" hidden>
           <div class="two-col">
             <div class="card">
@@ -339,8 +370,22 @@
             <button id="btn-send-to-build" type="button" class="btn btn-secondary btn-sm">Use in Build &amp; Sign &rarr;</button>
           </div>
           <div class="browser-grid">
-            <div id="decoded-file-list" class="file-list"></div>
-            <pre id="decoded-file-content" class="code-viewer">Select a file on the left to inspect its contents safely.</pre>
+            <div class="browser-sidebar">
+              <input id="decoded-search" type="search" class="file-search" placeholder="Search decoded files..." aria-label="Search decoded files" autocomplete="off">
+              <div id="decoded-file-list" class="file-list" role="region" aria-label="Decoded files"></div>
+              <div class="file-pagination">
+                <button id="btn-decoded-prev" type="button" class="btn btn-ghost btn-sm" disabled>&larr; Prev</button>
+                <span id="decoded-page-info" class="muted small">Page 1/1</span>
+                <button id="btn-decoded-next" type="button" class="btn btn-ghost btn-sm" disabled>Next &rarr;</button>
+              </div>
+            </div>
+            <div class="browser-preview">
+              <div class="decoded-file-meta">
+                <strong id="decoded-file-path" class="small">No file selected</strong>
+                <span id="decoded-file-size" class="muted small"></span>
+              </div>
+              <pre id="decoded-file-content" class="code-viewer">Select a file on the left to inspect its contents safely.</pre>
+            </div>
           </div>
         </div>
       </section>

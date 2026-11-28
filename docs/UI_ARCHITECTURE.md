@@ -33,7 +33,8 @@ All routes invoke core library modules directly (`apk_surgeon.toolkit`, `apk_sur
 | `GET /api/jobs` | Returns session job history (status, metrics, size & score deltas, artifacts) |
 | `GET /api/jobs/<id>/events` | Server-Sent Events (SSE) live log/progress stream backed by `threading.Condition` |
 | `GET /api/jobs/<id>/artifacts/<name>` | Downloads built `.apk`/`.apks` or reads `privacy-report.md` / diffs / manifests |
-| `GET /api/workspace-file` | Read-only viewer for `AndroidManifest.xml` / files inside session-created decode dirs |
+| `GET /api/jobs/<id>/files` | Server-side paginated & searchable decoded workspace file listing (`q`, `page`, `per_page`) |
+| `GET /api/workspace-file` | Read-only text & bounded 4 KiB hex viewer for files inside session-created decode dirs |
 
 ---
 
@@ -56,9 +57,9 @@ All routes invoke core library modules directly (`apk_surgeon.toolkit`, `apk_sur
 
 ## 4. Workbenches & Value-Add Features
 
-1. **Dropzone & Instant Inspector:** Drag-and-drop or local path inspection returning package/SDK metadata, ABIs, native frameworks, Pairip verdict, DEX `035`–`041` container breakdown, `resources.arsc` storage, and `extractNativeLibs` readiness.
-2. **Privacy Studio (Scan → Diff Preview → Approve):** Interactive toggle cards (`--sinkhole`, `--trust-user-ca`, `--allow-screenshots`, `--strip-ad-permissions`, `--disable-providers`, `--selective-dex`, `--smali-only`, `--merge-splits`, `--allow-custom-domains`, `--force-unsafe`), live YAML Recipe editor with diagnostics, and syntax-colored unified diff preview before building.
-3. **Raw Toolkit Tabs:** Dedicated `Decode`, `Build & Sign`, `Merge Splits`, and `Sign & Verify` workflows with `--unsigned`, custom keystore, ABI filtering, and post-merge `extractNativeLibs` tracking.
+1. **Dropzone & Instant Inspector:** Drag-and-drop or local path inspection with live `XMLHttpRequest` upload progress & cancel controls, returning package/SDK metadata, ABIs, native frameworks, Pairip verdict, DEX `035`–`041` container breakdown, `resources.arsc` storage, ELF `PT_LOAD` 16 KiB checks, and `extractNativeLibs` readiness.
+2. **Privacy Studio (Scan → Diff Preview → Approve):** Interactive toggle cards (`--sinkhole`, `--trust-user-ca`, `--allow-screenshots`, `--strip-ad-permissions`, `--disable-providers`, `--selective-dex`, `--smali-only`, `--merge-splits`, `--allow-custom-domains`, `--force-unsafe`), External Tracker DB (`--tracker-db`) & Custom Keystore (`--keystore`, `--ks-alias`, `--ks-pass`) options, live YAML Recipe editor with diagnostics, and syntax-colored unified diff preview before building.
+3. **Raw Toolkit & Decoded Viewer:** Dedicated `Decode` (with paginated, searchable decoded-tree viewer supporting text & binary hex preview), `Build & Sign`, `Merge Splits`, and `Sign & Verify` workflows with `--unsigned`, custom keystore, ABI filtering, and post-merge `extractNativeLibs` / `isSplitRequired` cleanup.
 4. **Value-Add Productivity Features:**
    - **Live Equivalent CLI Command Bar:** Continuously reflects current UI choices as a copyable `apk-surgeon ...` command.
    - **Toolchain Doctor Drawer:** Live tool versions + 1-click copyable OS install commands (Linux, macOS, Windows, Termux) + APKEditor JAR override.
