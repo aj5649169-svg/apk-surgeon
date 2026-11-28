@@ -248,6 +248,13 @@ def test_webui_paginated_searchable_files_hex_preview_and_symlink_safety(live_ui
     with urllib.request.urlopen(f"{base}/api/jobs/{job_id}/events", timeout=5) as stream:
         stream.read()
 
+    # Also test symlink placed directly inside job["decoded_dir"].
+    decoded_dir = server.manager.get_job(job_id)["decoded_dir"]
+    try:
+        os.symlink(outside, decoded_dir / "direct-escape.txt")
+    except OSError:
+        pass
+
     # Page 1: priority files first, total count > 115, pagination metadata present
     st1, _, p1_raw = _req(f"{base}/api/jobs/{job_id}/files?page=1&per_page=50")
     p1 = json.loads(p1_raw)
@@ -258,6 +265,7 @@ def test_webui_paginated_searchable_files_hex_preview_and_symlink_safety(live_ui
     assert p1["page"] == 1 and p1["per_page"] == 50
     assert p1["total"] >= 120 and p1["total_pages"] == 3
     assert "escape.txt" not in p1["files"]
+    assert "direct-escape.txt" not in p1["files"]
 
     # Page 3: remainder of files
     st3, _, p3_raw = _req(f"{base}/api/jobs/{job_id}/files?page=3&per_page=50")
@@ -296,8 +304,8 @@ def test_webui_paginated_searchable_files_hex_preview_and_symlink_safety(live_ui
     assert st_utf8 == 200 and utf8["mode"] == "text" and utf8["truncated"] is True
 
     # Symlink escape (if created) is rejected with 403
-    if (dec_root / "escape.txt").is_symlink():
-        st_esc, _, _ = _req(f"{base}/api/workspace-file?job_id={job_id}&path=escape.txt")
+    if (decoded_dir / "direct-escape.txt").is_symlink():
+        st_esc, _, _ = _req(f"{base}/api/workspace-file?job_id={job_id}&path=direct-escape.txt")
         assert st_esc == 403
 
 
